@@ -25,6 +25,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // The adapter-core module gives you access to the core ioBroker functions
 // you need to create an adapter
 const utils = __importStar(require("@iobroker/adapter-core"));
+const victron_bmv_1 = require("./victron_bmv");
 // Load your modules here, e.g.:
 // import * as fs from "fs";
 class Jstest extends utils.Adapter {
@@ -48,39 +49,52 @@ class Jstest extends utils.Adapter {
         // this.config:
         this.log.info("config option1: " + this.config.option1);
         this.log.info("config option2: " + this.config.option2);
+        this.log.info("config option2: " + this.config.serialPortPath);
         /*
         For every state in the system there has to be also an object of type state
         Here a simple template for a boolean variable named "testVariable"
         Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
         */
-        await this.setObjectNotExistsAsync("testVariable", {
-            type: "state",
-            common: {
-                name: "testVariable",
-                type: "boolean",
-                role: "indicator",
-                read: true,
-                write: true,
-            },
-            native: {},
-        });
-        await this.setObjectNotExistsAsync("bmv-value", {
-            type: "state",
-            common: {
-                name: "bmv-value",
-                type: "number",
-                role: "state",
-                read: true,
-                write: true,
-            },
-            native: {},
-        });
-        this.intervalRef = this.setInterval(async () => {
-            this.log.info("interval: ");
-            await this.setStateAsync("bmv-value", Math.random());
-        }, 1000);
+        // /dev/tty.usbserial-FTG63ICY
+        this.bmv = new victron_bmv_1.Victron_bmv(this.config.serialPortPath);
+        await this.initBmvObjects();
+        // this.intervalRef = this.setInterval(async () => {
+        // 	this.log.info("interval: ");
+        // 	await this.setStateAsync("bmv-value", Math.random());
+        // }, 60000);
+        this.bmv.cb = async (data) => {
+            //this.log.info("bmv callback: data:" + JSON.stringify(data));
+            await this.setStateAsync("V", data.V, true);
+            await this.setStateAsync("VS", data.VS, true);
+            await this.setStateAsync("I", data.VS, true);
+            await this.setStateAsync("CE", data.CE, true);
+            await this.setStateAsync("SOC", data.SOC, true);
+            await this.setStateAsync("TTG", data.TTG, true);
+            await this.setStateAsync("Alarm", data.Alarm, true);
+            await this.setStateAsync("Relay", data.Relay, true);
+            await this.setStateAsync("AR", data.AR, true);
+            await this.setStateAsync("BMV", data.BMV, true);
+            await this.setStateAsync("FW", data.FW, true);
+            await this.setStateAsync("H1", data.H1, true);
+            await this.setStateAsync("H2", data.H2, true);
+            await this.setStateAsync("H3", data.H3, true);
+            await this.setStateAsync("H4", data.H4, true);
+            await this.setStateAsync("H5", data.H5, true);
+            await this.setStateAsync("H6", data.H6, true);
+            await this.setStateAsync("H7", data.H7, true);
+            await this.setStateAsync("H8", data.H8, true);
+            await this.setStateAsync("H9", data.H9, true);
+            await this.setStateAsync("H10", data.H10, true);
+            await this.setStateAsync("H11", data.H11, true);
+            await this.setStateAsync("H12", data.H12, true);
+            await this.setStateAsync("H13", data.H13, true);
+            await this.setStateAsync("H14", data.H14, true);
+            await this.setStateAsync("H15", data.H15, true);
+            await this.setStateAsync("H16", data.H16, true);
+            return;
+        };
         // In order to get state updates, you need to subscribe to them. The following line adds a subscription for our variable we have created above.
-        this.subscribeStates("*");
+        //this.subscribeStates("*");
         // You can also add a subscription for multiple states. The following line watches all states starting with "lights."
         // this.subscribeStates("lights.*");
         // Or, if you really must, you can also watch all states. Don't do this if you don't need to. Otherwise this will cause a lot of unnecessary load on the system:
@@ -102,17 +116,43 @@ class Jstest extends utils.Adapter {
         result = await this.checkGroupAsync("admin", "admin");
         this.log.info("check group user admin group admin: " + result);
     }
+    async initBmvObjects() {
+        var _a, _b;
+        const propNames = Object.getOwnPropertyNames((_a = this.bmv) === null || _a === void 0 ? void 0 : _a.meta);
+        for (let i = 0; i < propNames.length; i++) {
+            const propName = propNames[i];
+            const prop = ((_b = this.bmv) === null || _b === void 0 ? void 0 : _b.meta)[propName];
+            const type = prop.type;
+            let name = prop.label;
+            if (prop.unit && prop.unit.length > 0) {
+                name += " ( " + prop.unit + " )";
+            }
+            await this.setObjectNotExistsAsync(propName, {
+                type: "state",
+                common: {
+                    name: name,
+                    type: type,
+                    role: prop.role,
+                    read: true,
+                    write: false,
+                    unit: prop.unit,
+                },
+                native: {},
+            });
+        }
+    }
     /**
      * Is called when adapter shuts down - callback has to be called under any circumstances!
      */
     onUnload(callback) {
+        var _a;
         try {
             // Here you must clear all timeouts or intervals that may still be active
             // clearTimeout(timeout1);
             // clearTimeout(timeout2);
             // ...
             // clearInterval(interval1);
-            clearInterval(this.intervalRef);
+            (_a = this.bmv) === null || _a === void 0 ? void 0 : _a.close();
             callback();
         }
         catch (e) {

@@ -5,12 +5,14 @@
 // The adapter-core module gives you access to the core ioBroker functions
 // you need to create an adapter
 import * as utils from "@iobroker/adapter-core";
+import { Bmv_data, Bmv_meta_entry, Victron_bmv } from "./victron_bmv";
 
 // Load your modules here, e.g.:
 // import * as fs from "fs";
 
 class Jstest extends utils.Adapter {
-	intervalRef: any;
+	bmv: Victron_bmv | undefined;
+
 	public constructor(options: Partial<utils.AdapterOptions> = {}) {
 		super({
 			...options,
@@ -33,43 +35,61 @@ class Jstest extends utils.Adapter {
 		// this.config:
 		this.log.info("config option1: " + this.config.option1);
 		this.log.info("config option2: " + this.config.option2);
+		this.log.info("config option2: " + this.config.serialPortPath);
 
 		/*
 		For every state in the system there has to be also an object of type state
 		Here a simple template for a boolean variable named "testVariable"
 		Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
 		*/
-		await this.setObjectNotExistsAsync("testVariable", {
-			type: "state",
-			common: {
-				name: "testVariable",
-				type: "boolean",
-				role: "indicator",
-				read: true,
-				write: true,
-			},
-			native: {},
-		});
+		// /dev/tty.usbserial-FTG63ICY
+		this.bmv = new Victron_bmv(this.config.serialPortPath);
 
-		await this.setObjectNotExistsAsync("bmv-value", {
-			type: "state",
-			common: {
-				name: "bmv-value",
-				type: "number",
-				role: "state",
-				read: true,
-				write: true,
-			},
-			native: {},
-		});
+		await this.initBmvObjects();
 
-		this.intervalRef = this.setInterval(async () => {
-			this.log.info("interval: ");
-			await this.setStateAsync("bmv-value", Math.random());
-		}, 1000);
+		// this.intervalRef = this.setInterval(async () => {
+		// 	this.log.info("interval: ");
+		// 	await this.setStateAsync("bmv-value", Math.random());
+		// }, 60000);
+
+		this.bmv.cb = async (data: Bmv_data) => {
+			//this.log.info("bmv callback: data:" + JSON.stringify(data));
+			await this.setStateAsync("V", data.V, true);
+			await this.setStateAsync("VS", data.VS, true);
+			await this.setStateAsync("I", data.VS, true);
+			await this.setStateAsync("CE", data.CE, true);
+			await this.setStateAsync("SOC", data.SOC, true);
+			await this.setStateAsync("TTG", data.TTG, true);
+			await this.setStateAsync("Alarm", data.Alarm, true);
+			await this.setStateAsync("Relay", data.Relay, true);
+			await this.setStateAsync("AR", data.AR, true);
+			await this.setStateAsync("BMV", data.BMV, true);
+			await this.setStateAsync("FW", data.FW, true);
+
+			await this.setStateAsync("H1", data.H1, true);
+			await this.setStateAsync("H2", data.H2, true);
+			await this.setStateAsync("H3", data.H3, true);
+			await this.setStateAsync("H4", data.H4, true);
+			await this.setStateAsync("H5", data.H5, true);
+			await this.setStateAsync("H6", data.H6, true);
+			await this.setStateAsync("H7", data.H7, true);
+			await this.setStateAsync("H8", data.H8, true);
+			await this.setStateAsync("H9", data.H9, true);
+			await this.setStateAsync("H10", data.H10, true);
+			await this.setStateAsync("H11", data.H11, true);
+			await this.setStateAsync("H12", data.H12, true);
+			await this.setStateAsync("H13", data.H13, true);
+			await this.setStateAsync("H14", data.H14, true);
+			await this.setStateAsync("H15", data.H15, true);
+			await this.setStateAsync("H16", data.H16, true);
+
+			return;
+		};
 
 		// In order to get state updates, you need to subscribe to them. The following line adds a subscription for our variable we have created above.
-		this.subscribeStates("*");
+
+		//this.subscribeStates("*");
+
 		// You can also add a subscription for multiple states. The following line watches all states starting with "lights."
 		// this.subscribeStates("lights.*");
 		// Or, if you really must, you can also watch all states. Don't do this if you don't need to. Otherwise this will cause a lot of unnecessary load on the system:
@@ -97,6 +117,32 @@ class Jstest extends utils.Adapter {
 		this.log.info("check group user admin group admin: " + result);
 	}
 
+	private async initBmvObjects(): Promise<void> {
+		const propNames = Object.getOwnPropertyNames(this.bmv?.meta);
+
+		for (let i = 0; i < propNames.length; i++) {
+			const propName = propNames[i];
+			const prop = (this.bmv?.meta as any)[propName] as Bmv_meta_entry;
+			const type: ioBroker.CommonType = prop.type as ioBroker.CommonType;
+			let name = prop.label;
+			if (prop.unit && prop.unit.length > 0) {
+				name += " ( " + prop.unit + " )";
+			}
+			await this.setObjectNotExistsAsync(propName, {
+				type: "state",
+				common: {
+					name: name,
+					type: type,
+					role: prop.role,
+					read: true,
+					write: false,
+					unit: prop.unit,
+				},
+				native: {},
+			});
+		}
+	}
+
 	/**
 	 * Is called when adapter shuts down - callback has to be called under any circumstances!
 	 */
@@ -107,8 +153,7 @@ class Jstest extends utils.Adapter {
 			// clearTimeout(timeout2);
 			// ...
 			// clearInterval(interval1);
-			clearInterval(this.intervalRef);
-
+			this.bmv?.close();
 			callback();
 		} catch (e) {
 			callback();
