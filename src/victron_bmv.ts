@@ -4,15 +4,15 @@ import SerialPort = require("serialport")
 
 export class Victron_bmv {
 
-    public constructor(serialportPath: string) {
+    public constructor() {
         // this.port = new SerialPort(serialportPath)
-        this.open(serialportPath)
+        // this.open(serialportPath)
     }
 
     frame = new Buffer(0); // in buffer
     self = this; // reference to itself
 
-    port: any;
+    port: SerialPort | undefined;
 
     public cb: CallbackFunction = () => { return };
 
@@ -79,43 +79,46 @@ export class Victron_bmv {
 
     receiveBmv(): void {
 
-        const parser = this.port.pipe(new SerialPort.parsers.Delimiter({ delimiter: '\r\n' }));
-        // eslint-disable-next-line @typescript-eslint/no-this-alias
-        const self = this;
+        if (this.port) {
+            const parser = this.port.pipe(new SerialPort.parsers.Delimiter({ delimiter: '\r\n' }));
+            // eslint-disable-next-line @typescript-eslint/no-this-alias
+            const self = this;
 
-        // on recive data event
-        parser.on('data', function (data: any) {
+            // on recive data event
+            parser.on('data', function (data: any) {
 
-            //line = new Buffer(data).toString('ascii');
-            const line = new Buffer(data)
-            //console.log("DATA->" , line)
-            self.frame = Buffer.concat([self.frame, line, Buffer.from("\r\n")]);
+                //line = new Buffer(data).toString('ascii');
+                const line = new Buffer(data)
+                //console.log("DATA->" , line)
+                self.frame = Buffer.concat([self.frame, line, Buffer.from("\r\n")]);
 
-            // Detect end of frame
-            if (line.toString().startsWith("Checksum")) {
+                // Detect end of frame
+                if (line.toString().startsWith("Checksum")) {
 
-                //console.log("detect end of frame")
-                // Modulo256
-                let sum = 0;
-                for (let i = 0; i < self.frame.length; i++) {
-                    sum = (sum + self.frame[i]) % 256;
+                    //console.log("detect end of frame")
+                    // Modulo256
+                    let sum = 0;
+                    for (let i = 0; i < self.frame.length; i++) {
+                        sum = (sum + self.frame[i]) % 256;
+                    }
+
+                    if (sum == 0) {
+                        // frame is ok
+                        self.parseValues(self.frame);
+                        self.cb(self.data);
+
+                    } else {
+                        //console.log("frame error !!!");
+                    }
+
+                    // reset frame
+                    self.frame = new Buffer(0);
                 }
 
-                if (sum == 0) {
-                    // frame is ok
-                    self.parseValues(self.frame);
-                    self.cb(self.data);
+            });
 
-                } else {
-                    //console.log("frame error !!!");
-                }
 
-                // reset frame
-                self.frame = new Buffer(0);
-            }
-
-        });
-
+        }
     }
 
     // convert frame to javascript object
@@ -133,29 +136,43 @@ export class Victron_bmv {
 
     //this.port
 
-    open(serialportPath: string): void {
-        // open serial port
-        this.port = new SerialPort(serialportPath, {
-            baudRate: 19200,
-        }, (error) => {
-            if (error) {
-                console.log("BMV error:", error)
-            } else {
-                this.port.set({
-                    "dtr": false,
-                    "rts": false,
-                    "cts": false,
-                    "dts": false,
-                    "brk": false,
-                });
-                console.log("bmv port is open")
-                this.receiveBmv();
-            }
-        });
+    async open(serialportPath: string): Promise<void> {
+
+        return new Promise((resolve, reject) => {
+            // open serial port
+            this.port = new SerialPort(serialportPath, {
+                baudRate: 19200,
+            }, (error) => {
+                if (error) {
+                    console.log("BMV error:", error)
+                    reject("bmv error" + error)
+                } else {
+                    if (this.port) {
+                        this.port.set({
+                            "dtr": false,
+                            "rts": false,
+                            "cts": false,
+                            //"dts": false,
+                            "brk": false,
+                        });
+                        console.log("bmv port is open")
+                        this.receiveBmv();
+                    }
+                    resolve();
+                }
+            });
+
+        })
     }
 
     close(): void {
-        this.port.close();
+        if (this.port) {
+            this.port.close();
+        }
+    }
+
+    isOpen(): boolean {
+        return (this.port && this.port.isOpen) ? true : false
     }
 
 }

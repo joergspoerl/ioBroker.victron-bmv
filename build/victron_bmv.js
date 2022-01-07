@@ -4,7 +4,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.Victron_bmv = void 0;
 const SerialPort = require("serialport");
 class Victron_bmv {
-    constructor(serialportPath) {
+    constructor() {
         this.frame = new Buffer(0); // in buffer
         this.self = this; // reference to itself
         this.cb = () => { return; };
@@ -68,38 +68,40 @@ class Victron_bmv {
             "H16": { type: "number", role: "state", scale: function (v) { return v / 1000; }, unit: "V", label: "The maximum starter battery voltage. ", descr: "" }
         };
         // this.port = new SerialPort(serialportPath)
-        this.open(serialportPath);
+        // this.open(serialportPath)
     }
     receiveBmv() {
-        const parser = this.port.pipe(new SerialPort.parsers.Delimiter({ delimiter: '\r\n' }));
-        // eslint-disable-next-line @typescript-eslint/no-this-alias
-        const self = this;
-        // on recive data event
-        parser.on('data', function (data) {
-            //line = new Buffer(data).toString('ascii');
-            const line = new Buffer(data);
-            //console.log("DATA->" , line)
-            self.frame = Buffer.concat([self.frame, line, Buffer.from("\r\n")]);
-            // Detect end of frame
-            if (line.toString().startsWith("Checksum")) {
-                //console.log("detect end of frame")
-                // Modulo256
-                let sum = 0;
-                for (let i = 0; i < self.frame.length; i++) {
-                    sum = (sum + self.frame[i]) % 256;
+        if (this.port) {
+            const parser = this.port.pipe(new SerialPort.parsers.Delimiter({ delimiter: '\r\n' }));
+            // eslint-disable-next-line @typescript-eslint/no-this-alias
+            const self = this;
+            // on recive data event
+            parser.on('data', function (data) {
+                //line = new Buffer(data).toString('ascii');
+                const line = new Buffer(data);
+                //console.log("DATA->" , line)
+                self.frame = Buffer.concat([self.frame, line, Buffer.from("\r\n")]);
+                // Detect end of frame
+                if (line.toString().startsWith("Checksum")) {
+                    //console.log("detect end of frame")
+                    // Modulo256
+                    let sum = 0;
+                    for (let i = 0; i < self.frame.length; i++) {
+                        sum = (sum + self.frame[i]) % 256;
+                    }
+                    if (sum == 0) {
+                        // frame is ok
+                        self.parseValues(self.frame);
+                        self.cb(self.data);
+                    }
+                    else {
+                        //console.log("frame error !!!");
+                    }
+                    // reset frame
+                    self.frame = new Buffer(0);
                 }
-                if (sum == 0) {
-                    // frame is ok
-                    self.parseValues(self.frame);
-                    self.cb(self.data);
-                }
-                else {
-                    //console.log("frame error !!!");
-                }
-                // reset frame
-                self.frame = new Buffer(0);
-            }
-        });
+            });
+        }
     }
     // convert frame to javascript object
     parseValues(frame) {
@@ -111,29 +113,40 @@ class Victron_bmv {
         }
     }
     //this.port
-    open(serialportPath) {
-        // open serial port
-        this.port = new SerialPort(serialportPath, {
-            baudRate: 19200,
-        }, (error) => {
-            if (error) {
-                console.log("BMV error:", error);
-            }
-            else {
-                this.port.set({
-                    "dtr": false,
-                    "rts": false,
-                    "cts": false,
-                    "dts": false,
-                    "brk": false,
-                });
-                console.log("bmv port is open");
-                this.receiveBmv();
-            }
+    async open(serialportPath) {
+        return new Promise((resolve, reject) => {
+            // open serial port
+            this.port = new SerialPort(serialportPath, {
+                baudRate: 19200,
+            }, (error) => {
+                if (error) {
+                    console.log("BMV error:", error);
+                    reject("bmv error" + error);
+                }
+                else {
+                    if (this.port) {
+                        this.port.set({
+                            "dtr": false,
+                            "rts": false,
+                            "cts": false,
+                            //"dts": false,
+                            "brk": false,
+                        });
+                        console.log("bmv port is open");
+                        this.receiveBmv();
+                    }
+                    resolve();
+                }
+            });
         });
     }
     close() {
-        this.port.close();
+        if (this.port) {
+            this.port.close();
+        }
+    }
+    isOpen() {
+        return (this.port && this.port.isOpen) ? true : false;
     }
 }
 exports.Victron_bmv = Victron_bmv;

@@ -11,8 +11,9 @@ import { Bmv_data, Bmv_meta_entry, Victron_bmv } from "./victron_bmv";
 // import * as fs from "fs";
 
 class Jstest extends utils.Adapter {
-	bmv: Victron_bmv | undefined;
-
+	bmv: Victron_bmv = new Victron_bmv();
+	lastResultTime = 0;
+	intervalRef: ioBroker.Interval | undefined;
 	public constructor(options: Partial<utils.AdapterOptions> = {}) {
 		super({
 			...options,
@@ -43,17 +44,29 @@ class Jstest extends utils.Adapter {
 		Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
 		*/
 		// /dev/tty.usbserial-FTG63ICY
-		this.bmv = new Victron_bmv(this.config.serialPortPath);
+		try {
+			await this.bmv.open(this.config.serialPortPath);
+		} catch (exception) {
+			this.log.error("open connection to bmv: " + exception);
+		}
 
 		await this.initBmvObjects();
 
-		// this.intervalRef = this.setInterval(async () => {
-		// 	this.log.info("interval: ");
-		// 	await this.setStateAsync("bmv-value", Math.random());
-		// }, 60000);
+		this.intervalRef = this.setInterval(async () => {
+			this.log.info("watchdog interval");
+			if (this.lastResultTime < Date.now() - 60) {
+				this.log.error("bmv connection lost !");
+				try {
+					await this.bmv.open(this.config.serialPortPath);
+				} catch (exception) {
+					this.log.error("open connection to bmv: " + exception);
+				}
+			}
+		}, 60000);
 
 		this.bmv.cb = async (data: Bmv_data) => {
-			//this.log.info("bmv callback: data:" + JSON.stringify(data));
+			this.lastResultTime = Date.now();
+			this.log.info("bmv callback: data:" + JSON.stringify(data));
 			await this.setStateAsync("V", data.V, true);
 			await this.setStateAsync("VS", data.VS, true);
 			await this.setStateAsync("I", data.VS, true);
@@ -100,14 +113,14 @@ class Jstest extends utils.Adapter {
 		you will notice that each setState will cause the stateChange event to fire (because of above subscribeStates cmd)
 		*/
 		// the variable testVariable is set to true as command (ack=false)
-		await this.setStateAsync("testVariable", true);
+		// await this.setStateAsync("testVariable", true);
 
 		// same thing, but the value is flagged "ack"
 		// ack should be always set to true if the value is received from or acknowledged from the target system
-		await this.setStateAsync("testVariable", { val: true, ack: true });
+		// await this.setStateAsync("testVariable", { val: true, ack: true });
 
 		// same thing, but the state is deleted after 30s (getState will return null afterwards)
-		await this.setStateAsync("testVariable", { val: true, ack: true, expire: 30 });
+		// await this.setStateAsync("testVariable", { val: true, ack: true, expire: 30 });
 
 		// examples for the checkPassword/checkGroup functions
 		let result = await this.checkPasswordAsync("admin", "iobroker");
@@ -152,7 +165,7 @@ class Jstest extends utils.Adapter {
 			// clearTimeout(timeout1);
 			// clearTimeout(timeout2);
 			// ...
-			// clearInterval(interval1);
+			clearInterval(this.intervalRef);
 			this.bmv?.close();
 			callback();
 		} catch (e) {

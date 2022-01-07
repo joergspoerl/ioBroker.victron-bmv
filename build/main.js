@@ -34,6 +34,8 @@ class Jstest extends utils.Adapter {
             ...options,
             name: "jstest",
         });
+        this.bmv = new victron_bmv_1.Victron_bmv();
+        this.lastResultTime = 0;
         this.on("ready", this.onReady.bind(this));
         this.on("stateChange", this.onStateChange.bind(this));
         // this.on("objectChange", this.onObjectChange.bind(this));
@@ -56,14 +58,28 @@ class Jstest extends utils.Adapter {
         Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
         */
         // /dev/tty.usbserial-FTG63ICY
-        this.bmv = new victron_bmv_1.Victron_bmv(this.config.serialPortPath);
+        try {
+            await this.bmv.open(this.config.serialPortPath);
+        }
+        catch (exception) {
+            this.log.error("open connection to bmv: " + exception);
+        }
         await this.initBmvObjects();
-        // this.intervalRef = this.setInterval(async () => {
-        // 	this.log.info("interval: ");
-        // 	await this.setStateAsync("bmv-value", Math.random());
-        // }, 60000);
+        this.intervalRef = this.setInterval(async () => {
+            this.log.info("watchdog interval");
+            if (this.lastResultTime < Date.now() - 60) {
+                this.log.error("bmv connection lost !");
+                try {
+                    await this.bmv.open(this.config.serialPortPath);
+                }
+                catch (exception) {
+                    this.log.error("open connection to bmv: " + exception);
+                }
+            }
+        }, 60000);
         this.bmv.cb = async (data) => {
-            //this.log.info("bmv callback: data:" + JSON.stringify(data));
+            this.lastResultTime = Date.now();
+            this.log.info("bmv callback: data:" + JSON.stringify(data));
             await this.setStateAsync("V", data.V, true);
             await this.setStateAsync("VS", data.VS, true);
             await this.setStateAsync("I", data.VS, true);
@@ -104,12 +120,12 @@ class Jstest extends utils.Adapter {
         you will notice that each setState will cause the stateChange event to fire (because of above subscribeStates cmd)
         */
         // the variable testVariable is set to true as command (ack=false)
-        await this.setStateAsync("testVariable", true);
+        // await this.setStateAsync("testVariable", true);
         // same thing, but the value is flagged "ack"
         // ack should be always set to true if the value is received from or acknowledged from the target system
-        await this.setStateAsync("testVariable", { val: true, ack: true });
+        // await this.setStateAsync("testVariable", { val: true, ack: true });
         // same thing, but the state is deleted after 30s (getState will return null afterwards)
-        await this.setStateAsync("testVariable", { val: true, ack: true, expire: 30 });
+        // await this.setStateAsync("testVariable", { val: true, ack: true, expire: 30 });
         // examples for the checkPassword/checkGroup functions
         let result = await this.checkPasswordAsync("admin", "iobroker");
         this.log.info("check user admin pw iobroker: " + result);
@@ -151,7 +167,7 @@ class Jstest extends utils.Adapter {
             // clearTimeout(timeout1);
             // clearTimeout(timeout2);
             // ...
-            // clearInterval(interval1);
+            clearInterval(this.intervalRef);
             (_a = this.bmv) === null || _a === void 0 ? void 0 : _a.close();
             callback();
         }
