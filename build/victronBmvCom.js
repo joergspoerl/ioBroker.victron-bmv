@@ -1,9 +1,9 @@
 "use strict";
 /* eslint-disable prettier/prettier */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Victron_bmv = void 0;
+exports.VictronBmvCom = void 0;
 const SerialPort = require("serialport");
-class Victron_bmv {
+class VictronBmvCom {
     constructor() {
         this.frame = new Buffer(0); // in buffer
         this.self = this; // reference to itself
@@ -149,5 +149,5 @@ class Victron_bmv {
         return (this.port && this.port.isOpen) ? true : false;
     }
 }
-exports.Victron_bmv = Victron_bmv;
-//# sourceMappingURL=victron_bmv.js.map
+exports.VictronBmvCom = VictronBmvCom;
+//# sourceMappingURL=victronBmvCom.js.map

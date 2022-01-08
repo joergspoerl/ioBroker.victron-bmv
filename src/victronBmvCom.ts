@@ -2,7 +2,7 @@
 
 import SerialPort = require("serialport")
 
-export class Victron_bmv {
+export class VictronBmvCom {
 
     public constructor() {
         // this.port = new SerialPort(serialportPath)

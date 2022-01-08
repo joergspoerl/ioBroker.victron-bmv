@@ -2,17 +2,17 @@
 "use strict";
 
 systemDictionary = {
-	"jstest adapter settings": {
-		en: "Adapter settings for jstest",
-		de: "Adaptereinstellungen für jstest",
-		ru: "Настройки адаптера для jstest",
-		pt: "Configurações do adaptador para jstest",
-		nl: "Adapterinstellingen voor jstest",
-		fr: "Paramètres d'adaptateur pour jstest",
-		it: "Impostazioni dell'adattatore per jstest",
-		es: "Ajustes del adaptador para jstest",
-		pl: "Ustawienia adaptera dla jstest",
-		"zh-cn": "jstest的适配器设置",
+	"victron-bmv adapter settings": {
+		en: "Adapter settings for victron-bmv",
+		de: "Adaptereinstellungen für victron-bmv",
+		ru: "Настройки адаптера для victron-bmv",
+		pt: "Configurações do adaptador para victron-bmv",
+		nl: "Adapterinstellingen voor victron-bmv",
+		fr: "Paramètres d'adaptateur pour victron-bmv",
+		it: "Impostazioni dell'adattatore per victron-bmv",
+		es: "Ajustes del adaptador para victron-bmv",
+		pl: "Ustawienia adaptera dla victron-bmv",
+		"zh-cn": "victron-bmv的适配器设置",
 	},
 	option1: {
 		en: "option1",

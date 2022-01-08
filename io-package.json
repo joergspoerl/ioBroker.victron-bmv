@@ -1,6 +1,6 @@
 {
 	"common": {
-		"name": "jstest",
+		"name": "victron-bmv",
 		"version": "0.0.1",
 		"news": {
 			"0.0.1": {
@@ -16,16 +16,16 @@
 				"zh-cn": "首次出版"
 			}
 		},
-		"title": "jstest",
+		"title": "victron-bmv",
 		"titleLang": {
-			"en": "jstest",
-			"de": "jstest",
-			"ru": "jstest",
-			"pt": "jstest",
+			"en": "victron-bmv",
+			"de": "victron-bmv",
+			"ru": "victron-bmv",
+			"pt": "victron-bmv",
 			"nl": "jst",
-			"fr": "jstest",
-			"it": "jstest",
-			"es": "jstest",
+			"fr": "victron-bmv",
+			"it": "victron-bmv",
+			"es": "victron-bmv",
 			"pl": "jtest",
 			"zh-cn": "测试"
 		},
@@ -46,10 +46,10 @@
 		"license": "MIT",
 		"platform": "Javascript/Node.js",
 		"main": "build/main.js",
-		"icon": "jstest.png",
+		"icon": "victron-bmv.png",
 		"enabled": true,
-		"extIcon": "https://raw.githubusercontent.com/joerg/ioBroker.jstest/main/admin/jstest.png",
-		"readme": "https://github.com/joerg/ioBroker.jstest/blob/main/README.md",
+		"extIcon": "https://raw.githubusercontent.com/joerg/ioBroker.victron-bmv/main/admin/victron-bmv.png",
+		"readme": "https://github.com/joerg/ioBroker.victron-bmv/blob/main/README.md",
 		"loglevel": "info",
 		"mode": "daemon",
 		"type": "energy",

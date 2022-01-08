@@ -5,20 +5,20 @@
 // The adapter-core module gives you access to the core ioBroker functions
 // you need to create an adapter
 import * as utils from "@iobroker/adapter-core";
-import { Bmv_data, Bmv_meta_entry, Victron_bmv } from "./victron_bmv";
+import { Bmv_data, Bmv_meta_entry, VictronBmvCom } from "./victronBmvCom";
 
 // Load your modules here, e.g.:
 // import * as fs from "fs";
 
-class Jstest extends utils.Adapter {
-	bmv: Victron_bmv = new Victron_bmv();
+class victronBmv extends utils.Adapter {
+	bmv: VictronBmvCom = new VictronBmvCom();
 	lastResultTime = 0;
 	watchDogintervalRef: ioBroker.Interval | undefined;
 	watchDogIntervalTime = 10;
 	public constructor(options: Partial<utils.AdapterOptions> = {}) {
 		super({
 			...options,
-			name: "jstest",
+			name: "victron-bmv",
 		});
 		this.on("ready", this.onReady.bind(this));
 		this.on("stateChange", this.onStateChange.bind(this));
@@ -256,8 +256,8 @@ class Jstest extends utils.Adapter {
 
 if (require.main !== module) {
 	// Export the constructor in compact mode
-	module.exports = (options: Partial<utils.AdapterOptions> | undefined) => new Jstest(options);
+	module.exports = (options: Partial<utils.AdapterOptions> | undefined) => new victronBmv(options);
 } else {
 	// otherwise start the instance directly
-	(() => new Jstest())();
+	(() => new victronBmv())();
 }
