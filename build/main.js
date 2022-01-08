@@ -36,6 +36,7 @@ class Jstest extends utils.Adapter {
         });
         this.bmv = new victron_bmv_1.Victron_bmv();
         this.lastResultTime = 0;
+        this.watchDogIntervalTime = 10;
         this.on("ready", this.onReady.bind(this));
         this.on("stateChange", this.onStateChange.bind(this));
         // this.on("objectChange", this.onObjectChange.bind(this));
@@ -58,56 +59,14 @@ class Jstest extends utils.Adapter {
         Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
         */
         // /dev/tty.usbserial-FTG63ICY
-        try {
-            await this.bmv.open(this.config.serialPortPath);
-        }
-        catch (exception) {
-            this.log.error("open connection to bmv: " + exception);
-        }
+        await this.initConnectionInfoObject();
         await this.initBmvObjects();
-        this.intervalRef = this.setInterval(async () => {
-            this.log.info("watchdog interval");
-            if (this.lastResultTime < Date.now() - 60) {
-                this.log.error("bmv connection lost !");
-                try {
-                    await this.bmv.open(this.config.serialPortPath);
-                }
-                catch (exception) {
-                    this.log.error("open connection to bmv: " + exception);
-                }
-            }
-        }, 60000);
+        this.watchDog(); // first connection
+        this.watchDogintervalRef = this.setInterval(async () => {
+            this.watchDog();
+        }, this.watchDogIntervalTime * 1000);
         this.bmv.cb = async (data) => {
-            this.lastResultTime = Date.now();
-            this.log.info("bmv callback: data:" + JSON.stringify(data));
-            await this.setStateAsync("V", data.V, true);
-            await this.setStateAsync("VS", data.VS, true);
-            await this.setStateAsync("I", data.VS, true);
-            await this.setStateAsync("CE", data.CE, true);
-            await this.setStateAsync("SOC", data.SOC, true);
-            await this.setStateAsync("TTG", data.TTG, true);
-            await this.setStateAsync("Alarm", data.Alarm, true);
-            await this.setStateAsync("Relay", data.Relay, true);
-            await this.setStateAsync("AR", data.AR, true);
-            await this.setStateAsync("BMV", data.BMV, true);
-            await this.setStateAsync("FW", data.FW, true);
-            await this.setStateAsync("H1", data.H1, true);
-            await this.setStateAsync("H2", data.H2, true);
-            await this.setStateAsync("H3", data.H3, true);
-            await this.setStateAsync("H4", data.H4, true);
-            await this.setStateAsync("H5", data.H5, true);
-            await this.setStateAsync("H6", data.H6, true);
-            await this.setStateAsync("H7", data.H7, true);
-            await this.setStateAsync("H8", data.H8, true);
-            await this.setStateAsync("H9", data.H9, true);
-            await this.setStateAsync("H10", data.H10, true);
-            await this.setStateAsync("H11", data.H11, true);
-            await this.setStateAsync("H12", data.H12, true);
-            await this.setStateAsync("H13", data.H13, true);
-            await this.setStateAsync("H14", data.H14, true);
-            await this.setStateAsync("H15", data.H15, true);
-            await this.setStateAsync("H16", data.H16, true);
-            return;
+            this.bmvCallback(data);
         };
         // In order to get state updates, you need to subscribe to them. The following line adds a subscription for our variable we have created above.
         //this.subscribeStates("*");
@@ -131,6 +90,76 @@ class Jstest extends utils.Adapter {
         this.log.info("check user admin pw iobroker: " + result);
         result = await this.checkGroupAsync("admin", "admin");
         this.log.info("check group user admin group admin: " + result);
+    }
+    async initConnectionInfoObject() {
+        await this.setObjectNotExistsAsync("info.connection", {
+            _id: "info.connection",
+            type: "state",
+            common: {
+                role: "indicator.connected",
+                name: "If communication with circuit works",
+                type: "boolean",
+                read: true,
+                write: false,
+                def: false,
+            },
+            native: {},
+        });
+    }
+    async watchDog() {
+        const timeDiffToLastResult = Date.now() - this.lastResultTime;
+        this.log.debug("watchdog interval");
+        this.log.debug("watchdog interval lastResultTime: " + this.lastResultTime);
+        this.log.debug("watchdog interval timeDiffToLastResult: " + timeDiffToLastResult);
+        if (timeDiffToLastResult > 1000) {
+            this.log.error("bmv connection lost !");
+            try {
+                // this.bmv.close();
+                if (!this.bmv.isOpen()) {
+                    await this.bmv.open(this.config.serialPortPath);
+                }
+                await this.setInfoConnectionState(true);
+            }
+            catch (exception) {
+                await this.setInfoConnectionState(false);
+                this.log.error("open connection to bmv: " + exception);
+            }
+        }
+    }
+    async bmvCallback(data) {
+        this.lastResultTime = Date.now();
+        this.log.debug("bmv callback: data:" + JSON.stringify(data));
+        await this.setStateAsync("V", data.V, true);
+        await this.setStateAsync("VS", data.VS, true);
+        await this.setStateAsync("I", data.VS, true);
+        await this.setStateAsync("CE", data.CE, true);
+        await this.setStateAsync("SOC", data.SOC, true);
+        await this.setStateAsync("TTG", data.TTG, true);
+        await this.setStateAsync("Alarm", data.Alarm, true);
+        await this.setStateAsync("Relay", data.Relay, true);
+        await this.setStateAsync("AR", data.AR, true);
+        await this.setStateAsync("BMV", data.BMV, true);
+        await this.setStateAsync("FW", data.FW, true);
+        await this.setStateAsync("H1", data.H1, true);
+        await this.setStateAsync("H2", data.H2, true);
+        await this.setStateAsync("H3", data.H3, true);
+        await this.setStateAsync("H4", data.H4, true);
+        await this.setStateAsync("H5", data.H5, true);
+        await this.setStateAsync("H6", data.H6, true);
+        await this.setStateAsync("H7", data.H7, true);
+        await this.setStateAsync("H8", data.H8, true);
+        await this.setStateAsync("H9", data.H9, true);
+        await this.setStateAsync("H10", data.H10, true);
+        await this.setStateAsync("H11", data.H11, true);
+        await this.setStateAsync("H12", data.H12, true);
+        await this.setStateAsync("H13", data.H13, true);
+        await this.setStateAsync("H14", data.H14, true);
+        await this.setStateAsync("H15", data.H15, true);
+        await this.setStateAsync("H16", data.H16, true);
+        return;
+    }
+    async setInfoConnectionState(state) {
+        await this.setStateAsync("info.connection", state, true);
     }
     async initBmvObjects() {
         var _a, _b;
@@ -167,7 +196,7 @@ class Jstest extends utils.Adapter {
             // clearTimeout(timeout1);
             // clearTimeout(timeout2);
             // ...
-            clearInterval(this.intervalRef);
+            clearInterval(this.watchDogintervalRef);
             (_a = this.bmv) === null || _a === void 0 ? void 0 : _a.close();
             callback();
         }

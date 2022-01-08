@@ -166,7 +166,7 @@ export class Victron_bmv {
     }
 
     close(): void {
-        if (this.port) {
+        if (this.port && this.isOpen) {
             this.port.close();
         }
     }
