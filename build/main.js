@@ -128,6 +128,7 @@ class victronBmv extends utils.Adapter {
     }
     async bmvCallback(data) {
         this.lastResultTime = Date.now();
+        await this.setInfoConnectionState(true);
         this.log.debug("bmv callback: data:" + JSON.stringify(data));
         await this.setStateAsync("V", data.V, true);
         await this.setStateAsync("VS", data.VS, true);
