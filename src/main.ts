@@ -133,7 +133,7 @@ class victronBmv extends utils.Adapter {
 		this.log.debug("bmv callback: data:" + JSON.stringify(data));
 		await this.setStateAsync("V", data.V, true);
 		await this.setStateAsync("VS", data.VS, true);
-		await this.setStateAsync("I", data.VS, true);
+		await this.setStateAsync("I", data.I, true);
 		await this.setStateAsync("CE", data.CE, true);
 		await this.setStateAsync("SOC", data.SOC, true);
 		await this.setStateAsync("TTG", data.TTG, true);
