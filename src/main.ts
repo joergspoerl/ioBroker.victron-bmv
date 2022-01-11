@@ -35,8 +35,6 @@ class victronBmv extends utils.Adapter {
 
 		// The adapters config (in the instance object everything under the attribute "native") is accessible via
 		// this.config:
-		this.log.info("config option1: " + this.config.option1);
-		this.log.info("config option2: " + this.config.option2);
 		this.log.info("config option2: " + this.config.serialPortPath);
 
 		/*
