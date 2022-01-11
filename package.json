@@ -1,6 +1,6 @@
 {
   "name": "iobroker.victron-bmv",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "iobroker test adapter",
   "author": {
     "name": "joerg",
