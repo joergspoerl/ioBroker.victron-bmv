@@ -22,7 +22,6 @@ module.exports = [
 			...tsPlugin.configs.recommended.rules,
 			"indent": "off",
 			"quotes": ["error", "double", { "avoidEscape": true, "allowTemplateLiterals": true }],
-			"@typescript-eslint/no-parameter-properties": "off",
 			"@typescript-eslint/no-use-before-define": ["error", {
 				"functions": false,
 				"typedefs": false,
@@ -36,7 +35,6 @@ module.exports = [
 				"allowExpressions": true,
 				"allowTypedFunctionExpressions": true,
 			}],
-			"@typescript-eslint/no-object-literal-type-assertion": "off",
 			"@typescript-eslint/no-non-null-assertion": "off",
 			"no-var": "error",
 			"prefer-const": "error",
