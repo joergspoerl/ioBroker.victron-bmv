@@ -45,14 +45,14 @@ Offizielle Referenzen:
 - Ein offener, aber stummer Port wird nicht mehr als verbunden angezeigt, sondern kontrolliert geschlossen und erneut geöffnet.
 - Open/Set besitzen ein 10-Sekunden-Timeout, Close ein 5-Sekunden-Timeout; späte Callbacks einer alten Session werden nicht als aktuelle Daten übernommen.
 - Beim kontrollierten Adapterstopp wird `info.connection=false` quittiert, bevor der Unload abschließt.
-- Ungültige Checksummen, unbekannte Felder und beschädigte Frames erzeugen keine erfundenen Messwerte.
+- Ungültige Checksummen, beschädigte Frames und nicht dekodierbare Feldwerte verwerfen den betroffenen Block; unbekannte Felder werden ignoriert. In keinem Fall entstehen erfundene Messwerte.
 - States werden nur bei Änderungen geschrieben und erhalten `ack=true`, wenn sie aus einem gültigen Geräteblock stammen.
 
 ## Sonderwerte
 
 | Geräteangabe | ioBroker-Verhalten |
 |---|---|
-| `---` | `null`; kein `NaN` und kein Pseudo-Nullwert |
+| `---` in numerischen Feldern | `null`; kein `NaN` und kein Pseudo-Nullwert |
 | `TTG=-1` | `TTG=null`, `TTGInfinite=true` |
 | Normales `TTG` in Minuten | Stunden; `TTGInfinite=false` |
 | Fehlendes/optionales Feld | Es wird kein State-Wert erzeugt oder mit 0 simuliert |
