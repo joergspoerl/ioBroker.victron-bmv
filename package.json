@@ -1,6 +1,6 @@
 {
   "name": "iobroker.victron-bmv",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "description": "Victron BMV battery monitor via VE.Direct text protocol",
   "author": {
     "name": "joerg",

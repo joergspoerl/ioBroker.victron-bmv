@@ -1,67 +1,80 @@
 {
-    "common": {
-        "name": "victron-bmv",
-        "version": "0.0.3",
-        "news": {
-            "0.0.3": {
-                "en": "Corrected battery-current mapping",
-                "de": "Korrigierte Zuordnung des Batteriestroms"
-            },
-            "0.0.2": {
-                "en": "Initial release",
-                "de": "Erstveröffentlichung"
-            }
-        },
-        "title": "Victron BMV VE.Direct",
-        "titleLang": {
-            "en": "Victron BMV VE.Direct",
-            "de": "Victron BMV VE.Direct"
-        },
-        "desc": {
-            "en": "Victron BMV battery monitor using the VE.Direct text protocol",
-            "de": "Victron BMV Batteriemonitor über das VE.Direct-Textprotokoll"
-        },
-        "authors": [
-            "joergoss <joerg.oss@gmx.de>"
-        ],
-        "keywords": [
-            "ioBroker",
-            "Victron",
-            "BMV",
-            "VE.Direct",
-            "battery monitor"
-        ],
-        "licenseInformation": {
-            "type": "free",
-            "license": "MIT",
-            "link": "https://github.com/joergoss/ioBroker.victron-bmv/blob/master/LICENSE"
-        },
-        "tier": 3,
-        "platform": "Javascript/Node.js",
-        "main": "build/main.js",
-        "icon": "victron-bmv.png",
-        "enabled": true,
-        "extIcon": "https://raw.githubusercontent.com/joergoss/ioBroker.victron-bmv/master/admin/victron-bmv.png",
-        "readme": "https://github.com/joergoss/ioBroker.victron-bmv/blob/master/README.md",
-        "loglevel": "info",
-        "mode": "daemon",
-        "type": "energy",
-        "compact": true,
-        "connectionType": "local",
-        "dataSource": "push",
-        "materialize": true,
-        "adminUI": {
-            "config": "materialize"
-        },
-        "dependencies": [
-            {
-                "js-controller": ">=7.0.0"
-            }
-        ]
+  "common": {
+    "name": "victron-bmv",
+    "version": "0.1.0",
+    "news": {
+      "0.1.0": {
+        "en": "VE.Direct-Feldskalierung, Metadaten und Sonderwerte korrigiert (#2).\nSerial-Watchdog, State-Serialisierung und Unload sicher überarbeitet (#3, #9).\nByteorientierter Parser mit Multiblock-/HEX-/Recovery-Tests neu aufgebaut (#4, #10).\nSerialPort 12 mit ARMv7-Prebuilds und Node.js-18-kompatibler Testsuite eingeführt (#6, #8).\nAdmin, Paket, CI und Dokumentation modernisiert; vollständiger pi3-Audit integriert (#1, #7).",
+        "de": "VE.Direct-Feldskalierung, Metadaten und Sonderwerte korrigiert (#2).\nSerial-Watchdog, State Serialization and Unload safe überarbeitet (#3, #9).\nByte-orientierter Parser mit Multiblock-/Hex-/Recovery-Tests neu aufgebaut (#4, #10).\nSerialPort 12 with ARMv7-Prebuilds and Node.JS-18-compatible Testsuite eingeführt (#6, #8).\nAdmin, Paket, CI und Dokumentation modernisiert; PI3-Audit integriert (#1, #7).",
+        "ru": "Исправлено прямое масштабирование поля, метаданные и значение запроса (#2).\nSerial-Watchdog, государственная сериализация и безопасная выгрузка (#3, #9).\nНовый байтоориентированный парсер с многоблочными тестами, тестами HEX/Recovery (#4, #10).\nВведен последовательный порт 12 с предварительными сборками ARMv7 и пакетом тестов, совместимым с Node.js-18 (#6, #8).\nМодернизированы администрирование, пакеты, CI и документация; интегрирован полный аудит PI3 (#1, #7).",
+        "pt": "VE.Direct Field Scaling, metadados e valores especiais (#2).\nSerial-Watchdog, State Serializing and Unload (#3, #9).\nNovo analisador orientado a bytes com testes multiblock-/hex-/recovery (#4, #10).\nSerialPort 12 inclui ARMv7 prebuilds e Node.JS-18 Testsuite (#6, #8).\nModerniza Admin, Packet, CI e documentação; auditoria PI3 completa (#1, #7).",
+        "nl": "VE.Direct-veldskalierung, metagegevens en onderwerte gekorrigiert (#2).\nSerial-Watchdog, State Serialisierung und Unload sicher überarbeitet (#3, #9).\nByteoriëntierter parser met nieuwe opties voor multiblock-/HEX-/Recovery-tests (#4, #10).\nSerialPort 12 met ARMv7-prebuilds en Node.js-18-compatibele testsuite meegeleverd (#6, #8).\nAdmin, Paket, CI en documentatie gemoderniseerd; volledige PI3-audit geïntegreerd (#1, #7).",
+        "fr": "VE.Direct-Feldskalierung, Metadaten und Sonderwerte korrigiert (#2).\nSerial-Watchdog, State-Serialisierung und Unload sicher überarbeitet (#3, #9).\nByteorientierter Parser mit Multiblock-/HEX-/Recovery-Tests new aufgebaut (#4, #10).\nSerialPort 12 intègre une suite de tests compatible ARMv7-Prebuilds et Node.JS-18 (#6, #8).\nAdmin, Paket, CI und Dokumentation modernisiert ; audit PI3 complet intégré (#1, #7).",
+        "it": "Scala di campo, metadati e valori speciali di VE.Direct corretti (#2).\nSerial-Watchdog, State Serialisierung e Unload sicuro (#3, #9).\nParser byteorientato con test Multiblock-/HEX/Recovery (#4, #10).\nSerialPort 12 con prebuild ARMv7 e suite di test compatibile con Node.js-18 (#6, #8).\nAdmin, Pack, CI e documentazione aggiornati; audit PI3 completo (#1, #7).",
+        "es": "Ve.Direct-Feldskalierung, Metadaten und Sonderwerte Korrigiert (#2).\nSerial-Watchdog, State Serialisierung und Unload sicher überarbeitet (#3, #9).\nByteorierter Parser mit Multiblock, Hex-/Recovery Tests neu aufgebaut (#4, #10).\nSerialPort 12 con precompilaciones ARMv7 y paquete de pruebas compatible con Node.JS-18 (#6, #8).\nAdmin, Paket, CI und Dokumentation modernisiert; PI3-Audit integrer (#1, #7).",
+        "pl": "Skorygowane skalowanie pola VE.Direct, metadane i inne dane (#2).\nSerial-Watchdog, State Serialization and Unload pewność pracy (#3, #9).\nBytteoretyczne parsery za pomocą testów multiblokowych/HEX/Recovery zostały ponownie utworzone (#4, #10).\nSerialPort 12 z prebuildami ARMv7 i pakiet testowy zgodny z Node.JS-18 (#6, #8).\nAdministrator, pakiet, CI i dokumentacja zostały zmodernizowane; w pełni zintegrowany audyt PI3 (#1, #7).",
+        "uk": "VE.Виправлено шкалу поля Direct, метадані та окремі значення (#2).\nСерій-Watchdog, Серіалізація стану та безпечна вивантаження (#3, #9).\nПеретворений теоретичний аналізатор з багатоблочними/шестигранними тестами відновлення (#4, #10).\nSerialPort 12 вбудований з попередніми збірками ARMV7 та сумісним з Node.js-18 тестовим пакетом (#6, #8).\nМодернізовано адміністратор, пакет, CI та документацію; повністю інтегрований аудит PI3 (#1, #7).",
+        "zh-cn": "ve.direct-feldskalierung、元数据和特殊值已修复 (#2)。\nSerial-Watchdog、State-Serialisierung 和 Unload 安全运行 (#3, #9)。\n新增了带有多块/十六进制/恢复测试的字节导向解析器 (#4, #10)。\nSerialPort 12 包含 ARMv7 预编译版本和兼容 Node.js-18 的测试套件 (#6, #8)。\n对管理员、软件包、CI 和文档进行了现代化改造；全面整合了 PI3 审计 (#1, #7)。"
+      },
+      "0.0.3": {
+        "en": "Corrected battery-current mapping",
+        "de": "Korrigierte Zuordnung des Batteriestroms"
+      },
+      "0.0.2": {
+        "en": "Initial release",
+        "de": "Erstveröffentlichung"
+      }
     },
-    "native": {
-        "serialPortPath": ""
+    "title": "Victron BMV VE.Direct",
+    "titleLang": {
+      "en": "Victron BMV VE.Direct",
+      "de": "Victron BMV VE.Direct"
     },
-    "objects": [],
-    "instanceObjects": []
+    "desc": {
+      "en": "Victron BMV battery monitor using the VE.Direct text protocol",
+      "de": "Victron BMV Batteriemonitor über das VE.Direct-Textprotokoll"
+    },
+    "authors": [
+      "joergoss <joerg.oss@gmx.de>"
+    ],
+    "keywords": [
+      "ioBroker",
+      "Victron",
+      "BMV",
+      "VE.Direct",
+      "battery monitor"
+    ],
+    "licenseInformation": {
+      "type": "free",
+      "license": "MIT",
+      "link": "https://github.com/joergoss/ioBroker.victron-bmv/blob/master/LICENSE"
+    },
+    "tier": 3,
+    "platform": "Javascript/Node.js",
+    "main": "build/main.js",
+    "icon": "victron-bmv.png",
+    "enabled": true,
+    "extIcon": "https://raw.githubusercontent.com/joergoss/ioBroker.victron-bmv/master/admin/victron-bmv.png",
+    "readme": "https://github.com/joergoss/ioBroker.victron-bmv/blob/master/README.md",
+    "loglevel": "info",
+    "mode": "daemon",
+    "type": "energy",
+    "compact": true,
+    "connectionType": "local",
+    "dataSource": "push",
+    "materialize": true,
+    "adminUI": {
+      "config": "materialize"
+    },
+    "dependencies": [
+      {
+        "js-controller": ">=7.0.0"
+      }
+    ]
+  },
+  "native": {
+    "serialPortPath": ""
+  },
+  "objects": [],
+  "instanceObjects": []
 }

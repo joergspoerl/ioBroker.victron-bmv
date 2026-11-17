@@ -132,8 +132,7 @@ npm run test:all
 `test:all` umfasst TypeScript-/Protokoll-/Lifecycle-Tests, Package-Checks, Typecheck, ESLint, Build und js-controller-Integration. Die CI-Matrix deckt Node.js 18, 20, 22, 24 und 26 auf Linux, Windows und macOS ab. Die Tests verwenden offizielle Rohframes, alle Chunk-Grenzen, alle 256 binären Checksum-Werte, Multiblock-Streams, asynchrone HEX-Nachrichten, reale BMV-602S-Produktionsvektoren und SerialPort-Mocks. Reale Hardware oder serielle Native-Treiber sind für die Unit-Tests nicht erforderlich. Die Entwicklungswerkzeuge (ESLint 10) benötigen Node.js ≥ 20.19; die Produktionsunterstützung ab Node.js 18 bleibt davon unberührt.
 
 ## Changelog
-
-### **WORK IN PROGRESS**
+### 0.1.0 (2026-11-17)
 - (joerg) VE.Direct-Feldskalierung, Metadaten und Sonderwerte korrigiert (#2).
 - (joerg) Serial-Watchdog, State-Serialisierung und Unload sicher überarbeitet (#3, #9).
 - (joerg) Byteorientierter Parser mit Multiblock-/HEX-/Recovery-Tests neu aufgebaut (#4, #10).
