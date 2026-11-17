@@ -393,6 +393,97 @@ describe("VictronBmvCom serial lifecycle", () => {
 		expect(com.isOpen()).to.equal(false);
 	});
 
+	it("never lets a failed late close of an old port hijack the current session", async () => {
+		const first = new FakeSerialPort();
+		const second = new FakeSerialPort();
+		const callbacks: ((error?: Error | null) => void)[] = [];
+		const frames: VeDirectFrame[] = [];
+		let factoryCalls = 0;
+		const com = new VictronBmvCom((_path, _options, callback) => {
+			const index = factoryCalls++;
+			const port = index === 0 ? first : second;
+			callbacks[index] = callback;
+			if (index === 1) {
+				process.nextTick(() => {
+					port.isOpen = true;
+					callback();
+				});
+			}
+			return port;
+		}, { openTimeoutMs: 20, closeTimeoutMs: 20, lateCloseRetryMs: 1 });
+		com.onFrame = frame => frames.push(frame);
+		try {
+			await com.open("first");
+			expect.fail("first open should time out");
+		} catch {}
+		await com.open("second");
+		second.emit("data", makeFrame([["V", "13118"]]));
+
+		first.failClose = new Error("late old close failed");
+		first.isOpen = true;
+		callbacks[0]();
+		await new Promise(resolve => setImmediate(resolve));
+		first.failClose = undefined;
+		await new Promise(resolve => setTimeout(resolve, 10));
+		second.emit("data", makeFrame([["I", "1000"]]));
+
+		expect(frames).to.deep.equal([{ V: 13.118 }, { I: 1 }]);
+		expect(first.closeCalls).to.equal(2);
+		await com.close();
+		expect(second.closeCalls).to.equal(1);
+		expect(second.isOpen).to.equal(false);
+	});
+
+	it("creates a new operation for reopen immediately after aborting a pending open", async () => {
+		const first = new FakeSerialPort();
+		const second = new FakeSerialPort();
+		const callbacks: ((error?: Error | null) => void)[] = [];
+		let factoryCalls = 0;
+		const com = new VictronBmvCom((_path, _options, callback) => {
+			const index = factoryCalls++;
+			const port = index === 0 ? first : second;
+			callbacks[index] = callback;
+			if (index === 1) {
+				process.nextTick(() => {
+					port.isOpen = true;
+					callback();
+				});
+			}
+			return port;
+		});
+		const firstOpen = com.open("first");
+		const closing = com.close();
+		const reopen = com.open("second");
+		expect(reopen).not.to.equal(firstOpen);
+		first.isOpen = true;
+		callbacks[0]();
+		await Promise.all([firstOpen.catch(() => undefined), closing, reopen]);
+		expect(factoryCalls).to.equal(2);
+		expect(first.closeCalls).to.equal(1);
+		expect(com.isOpen()).to.equal(true);
+		await com.close();
+	});
+
+	it("cleans references and listeners after a late open error following timeout", async () => {
+		const first = new FakeSerialPort();
+		let openCallback!: (error?: Error | null) => void;
+		const com = new VictronBmvCom((_path, _options, callback) => {
+			openCallback = callback;
+			return first;
+		}, { openTimeoutMs: 20, closeTimeoutMs: 20 });
+		try {
+			await com.open("first");
+			expect.fail("open should time out");
+		} catch {}
+		expect(first.listenerCount("error")).to.equal(1);
+		expect(first.listenerCount("close")).to.equal(1);
+		openCallback(new Error("late open error"));
+		await new Promise(resolve => setImmediate(resolve));
+		expect(com.isOpen()).to.equal(false);
+		expect(first.listenerCount("error")).to.equal(0);
+		expect(first.listenerCount("close")).to.equal(0);
+	});
+
 	it("resets a partial frame before a later reconnect", async () => {
 		const port = new FakeSerialPort();
 		const frames: VeDirectFrame[] = [];

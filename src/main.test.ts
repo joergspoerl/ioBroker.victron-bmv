@@ -3,8 +3,27 @@ import { expect } from "chai";
 import proxyquire from "proxyquire";
 import * as sinon from "sinon";
 import { VeDirectParser } from "./veDirect/veDirectParser";
+import { VictronBmvCom } from "./victronBmvCom";
 
 class Adapter extends EventEmitter {}
+
+class LateSerialPort extends EventEmitter {
+	isOpen = false;
+	closeCalls = 0;
+	set(_options: Record<string, boolean>, callback: (error?: Error | null) => void): void {
+		callback(null);
+	}
+	close(callback: (error?: Error | null) => void): void {
+		this.closeCalls++;
+		if (this.closeCalls === 1) {
+			callback(new Error("late close failed"));
+			return;
+		}
+		this.isOpen = false;
+		this.emit("close");
+		callback(null);
+	}
+}
 
 const { VictronBmv } = proxyquire.noCallThru()("./main", {
 	"@iobroker/adapter-core": { Adapter },
@@ -322,6 +341,31 @@ describe("VE.Direct unload", () => {
 		expect(callback.calledOnce).to.equal(true);
 		expect(adapter.unloaded).to.equal(true);
 		expect(adapter.bmv.onFrame).to.equal(undefined);
+	});
+
+	it("bounds a pending native open and autonomously retries a late close after unload", async () => {
+		const adapter = harness();
+		const port = new LateSerialPort();
+		let openCallback!: (error?: Error | null) => void;
+		const com = new VictronBmvCom((_path, _options, callback) => {
+			openCallback = callback;
+			return port;
+		}, { openTimeoutMs: 20, closeTimeoutMs: 5, lateCloseRetryMs: 1 });
+		adapter.bmv = com;
+		const opening = com.open("pending");
+		const callback = sinon.stub();
+		adapter.onUnload(callback);
+		await adapter.unloadPromise;
+		await opening.catch(() => undefined);
+		expect(callback.calledOnce).to.equal(true);
+		expect(port.closeCalls).to.equal(0);
+
+		port.isOpen = true;
+		openCallback();
+		await new Promise(resolve => setTimeout(resolve, 30));
+		expect(port.closeCalls).to.equal(2);
+		expect(port.isOpen).to.equal(false);
+		expect(com.isOpen()).to.equal(false);
 	});
 
 	it("still finishes unload when close fails", async () => {

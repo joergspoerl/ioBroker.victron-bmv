@@ -164,6 +164,20 @@ describe("VE.Direct byte parser", () => {
 		}
 	});
 
+	it("classifies real HEX after garbage without breaking orphan recovery", () => {
+		for (const prefix of ["X\n", "X\r\n"]) {
+			const stream = Buffer.concat([Buffer.from(prefix), Buffer.from(":A1234\n"), makeFrame([["V", "13118"]])]);
+			for (let split = 0; split <= stream.length; split++) {
+				const parser = new VeDirectParser();
+				const frames = collect(parser);
+				parser.receive(stream.subarray(0, split));
+				parser.receive(stream.subarray(split));
+				expect(frames, `${JSON.stringify(prefix)} split ${split}`).to.deep.equal([{ V: 13.118 }]);
+				expect(parser.hexMessages, `${JSON.stringify(prefix)} split ${split}`).to.equal(1);
+			}
+		}
+	});
+
 	it("handles several HEX messages and resynchronizes the next TEXT frame", () => {
 		const parser = new VeDirectParser();
 		const frames = collect(parser);

@@ -66,17 +66,20 @@ export class VictronBmvCom {
 	private openPromise: Promise<void> | undefined;
 	private closePromise: Promise<void> | undefined;
 	private closeRequestId = 0;
+	private openCloseRequestId = 0;
 	private readonly portStates = new WeakMap<SerialPortLike, PortState>();
 	private readonly closeWaiters = new WeakMap<SerialPortLike, () => void>();
 	private readonly openTimeoutMs: number;
 	private readonly closeTimeoutMs: number;
+	private readonly lateCloseRetryMs: number;
 
 	constructor(
 		private readonly portFactory: SerialPortFactory = defaultPortFactory,
-		options: { openTimeoutMs?: number; closeTimeoutMs?: number } = {},
+		options: { openTimeoutMs?: number; closeTimeoutMs?: number; lateCloseRetryMs?: number } = {},
 	) {
 		this.openTimeoutMs = options.openTimeoutMs ?? SERIAL_OPEN_TIMEOUT_MS;
 		this.closeTimeoutMs = options.closeTimeoutMs ?? SERIAL_CLOSE_TIMEOUT_MS;
+		this.lateCloseRetryMs = options.lateCloseRetryMs ?? 1000;
 		this.parser.onFrame = frame => {
 			if (this.onFrame) {
 				this.onFrame({ ...frame });
@@ -94,10 +97,12 @@ export class VictronBmvCom {
 	}
 
 	open(serialportPath: string): Promise<void> {
-		if (this.openPromise) {
+		const closeRequest = this.closeRequestId;
+		if (this.openPromise && this.openCloseRequestId === closeRequest) {
 			return this.openPromise;
 		}
-		const operation = this.performOpen(serialportPath, this.closeRequestId);
+		const operation = this.performOpen(serialportPath, closeRequest);
+		this.openCloseRequestId = closeRequest;
 		this.openPromise = operation;
 		const clear = (): void => {
 			if (this.openPromise === operation) {
@@ -148,7 +153,10 @@ export class VictronBmvCom {
 			// that the returned port and all listeners have been installed first.
 			queueMicrotask(() => {
 				if (state.failed) {
-					if (!error && port?.isOpen) {
+					if (error || !port?.isOpen) {
+						state.closed = true;
+						this.cleanupPort(port);
+					} else {
 						void this.closeLatePort(port);
 					}
 					return;
@@ -211,9 +219,6 @@ export class VictronBmvCom {
 
 	close(): Promise<void> {
 		this.closeRequestId++;
-		if (this.port) {
-			this.portStates.get(this.port)?.rejectPending?.(new Error("Serial close requested"));
-		}
 		if (this.closePromise) {
 			return this.closePromise;
 		}
@@ -264,9 +269,8 @@ export class VictronBmvCom {
 			this.cleanupPort(port);
 		} catch (error) {
 			if (!state.closed && port.isOpen) {
-				// Keep a still-open port referenced and retryable. Never lose it or
-				// remove its error listener while the OS resource is alive.
-				this.port = port;
+				// Keep a current still-open port retryable. A late old port must
+				// never replace a newer session; closeLatePort owns its retry loop.
 				state.ready = false;
 			} else {
 				this.cleanupPort(port);
@@ -296,11 +300,24 @@ export class VictronBmvCom {
 	}
 
 	private async closeLatePort(port: SerialPortLike): Promise<void> {
-		try {
-			await this.closePort(port);
-		} catch (error) {
-			this.reportError(error);
+		const state = this.portStates.get(port);
+		while (!state?.closed && port.isOpen) {
+			try {
+				await this.closePort(port);
+				return;
+			} catch (error) {
+				this.reportError(error);
+				await this.delay(this.lateCloseRetryMs);
+			}
 		}
+		this.cleanupPort(port);
+	}
+
+	private delay(milliseconds: number): Promise<void> {
+		return new Promise(resolve => {
+			const timer = setTimeout(resolve, milliseconds);
+			if (typeof timer.unref === "function") timer.unref();
+		});
 	}
 
 	private handlePortClosed(port: SerialPortLike): void {

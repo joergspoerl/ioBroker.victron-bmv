@@ -27,10 +27,11 @@ function deferred() {
 }
 class VictronBmvCom {
     constructor(portFactory = defaultPortFactory, options = {}) {
-        var _a, _b;
+        var _a, _b, _c;
         this.portFactory = portFactory;
         this.parser = new veDirectParser_1.VeDirectParser();
         this.closeRequestId = 0;
+        this.openCloseRequestId = 0;
         this.portStates = new WeakMap();
         this.closeWaiters = new WeakMap();
         this.errorListener = (error) => {
@@ -38,6 +39,7 @@ class VictronBmvCom {
         };
         this.openTimeoutMs = (_a = options.openTimeoutMs) !== null && _a !== void 0 ? _a : exports.SERIAL_OPEN_TIMEOUT_MS;
         this.closeTimeoutMs = (_b = options.closeTimeoutMs) !== null && _b !== void 0 ? _b : exports.SERIAL_CLOSE_TIMEOUT_MS;
+        this.lateCloseRetryMs = (_c = options.lateCloseRetryMs) !== null && _c !== void 0 ? _c : 1000;
         this.parser.onFrame = frame => {
             if (this.onFrame) {
                 this.onFrame({ ...frame });
@@ -54,10 +56,12 @@ class VictronBmvCom {
         return ((_a = this.port) === null || _a === void 0 ? void 0 : _a.isOpen) === true;
     }
     open(serialportPath) {
-        if (this.openPromise) {
+        const closeRequest = this.closeRequestId;
+        if (this.openPromise && this.openCloseRequestId === closeRequest) {
             return this.openPromise;
         }
-        const operation = this.performOpen(serialportPath, this.closeRequestId);
+        const operation = this.performOpen(serialportPath, closeRequest);
+        this.openCloseRequestId = closeRequest;
         this.openPromise = operation;
         const clear = () => {
             if (this.openPromise === operation) {
@@ -107,7 +111,11 @@ class VictronBmvCom {
             // that the returned port and all listeners have been installed first.
             queueMicrotask(() => {
                 if (state.failed) {
-                    if (!error && (port === null || port === void 0 ? void 0 : port.isOpen)) {
+                    if (error || !(port === null || port === void 0 ? void 0 : port.isOpen)) {
+                        state.closed = true;
+                        this.cleanupPort(port);
+                    }
+                    else {
                         void this.closeLatePort(port);
                     }
                     return;
@@ -169,11 +177,7 @@ class VictronBmvCom {
         }
     }
     close() {
-        var _a, _b;
         this.closeRequestId++;
-        if (this.port) {
-            (_b = (_a = this.portStates.get(this.port)) === null || _a === void 0 ? void 0 : _a.rejectPending) === null || _b === void 0 ? void 0 : _b.call(_a, new Error("Serial close requested"));
-        }
         if (this.closePromise) {
             return this.closePromise;
         }
@@ -222,9 +226,8 @@ class VictronBmvCom {
         }
         catch (error) {
             if (!state.closed && port.isOpen) {
-                // Keep a still-open port referenced and retryable. Never lose it or
-                // remove its error listener while the OS resource is alive.
-                this.port = port;
+                // Keep a current still-open port retryable. A late old port must
+                // never replace a newer session; closeLatePort owns its retry loop.
                 state.ready = false;
             }
             else {
@@ -256,12 +259,25 @@ class VictronBmvCom {
         this.reportError(error);
     }
     async closeLatePort(port) {
-        try {
-            await this.closePort(port);
+        const state = this.portStates.get(port);
+        while (!(state === null || state === void 0 ? void 0 : state.closed) && port.isOpen) {
+            try {
+                await this.closePort(port);
+                return;
+            }
+            catch (error) {
+                this.reportError(error);
+                await this.delay(this.lateCloseRetryMs);
+            }
         }
-        catch (error) {
-            this.reportError(error);
-        }
+        this.cleanupPort(port);
+    }
+    delay(milliseconds) {
+        return new Promise(resolve => {
+            const timer = setTimeout(resolve, milliseconds);
+            if (typeof timer.unref === "function")
+                timer.unref();
+        });
     }
     handlePortClosed(port) {
         var _a, _b;

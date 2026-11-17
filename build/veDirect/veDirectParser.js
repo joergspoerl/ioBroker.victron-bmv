@@ -34,6 +34,19 @@ class VeDirectParser {
     }
     receive(data) {
         for (const byte of data) {
+            if (this.state === "orphanColon") {
+                if (byte === 0x41) {
+                    this.enterHex();
+                }
+                else {
+                    this.state = "idle";
+                    if (byte === COLON)
+                        this.enterHex();
+                    else
+                        this.receiveIdleByte(byte);
+                }
+                continue;
+            }
             if (this.state === "hex") {
                 if (byte === LF) {
                     this.hexMessages++;
@@ -47,21 +60,12 @@ class VeDirectParser {
                 if (this.state === "text" && this.candidateFromGarbage && this.line.length === 0 && Object.keys(this.records).length === 0) {
                     // A checksum colon can be followed by the remainder of an ambiguous
                     // HEX message. Discard that orphan instead of swallowing the next block.
-                    this.state = "idle";
+                    this.state = "orphanColon";
                     this.candidateFromGarbage = false;
                     this.idleHadGarbage = false;
                     continue;
                 }
-                this.state = "hex";
-                this.line = [];
-                this.records = {};
-                this.checksum = 0;
-                this.frameBytes = 0;
-                this.malformed = false;
-                this.overflow = false;
-                this.idleSawCR = false;
-                this.idleHadGarbage = false;
-                this.candidateFromGarbage = false;
+                this.enterHex();
                 continue;
             }
             switch (this.state) {
@@ -77,6 +81,18 @@ class VeDirectParser {
                     break;
             }
         }
+    }
+    enterHex() {
+        this.state = "hex";
+        this.line = [];
+        this.records = {};
+        this.checksum = 0;
+        this.frameBytes = 0;
+        this.malformed = false;
+        this.overflow = false;
+        this.idleSawCR = false;
+        this.idleHadGarbage = false;
+        this.candidateFromGarbage = false;
     }
     reset() {
         this.state = "idle";
