@@ -5,8 +5,8 @@ const veDirectParser_1 = require("./veDirect/veDirectParser");
 const defaultPortFactory = (path, options, callback) => {
     // Load native bindings only for a real open, not for parser/unit tests.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const SerialPort = require("serialport");
-    return new SerialPort(path, options, callback);
+    const { SerialPort } = require("serialport");
+    return new SerialPort({ path, baudRate: options.baudRate }, callback);
 };
 class VictronBmvCom {
     constructor(portFactory = defaultPortFactory) {

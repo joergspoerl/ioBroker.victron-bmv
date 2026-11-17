@@ -13,8 +13,8 @@ export type SerialPortFactory = (path: string, options: { baudRate: number }, ca
 const defaultPortFactory: SerialPortFactory = (path, options, callback) => {
 	// Load native bindings only for a real open, not for parser/unit tests.
 	// eslint-disable-next-line @typescript-eslint/no-require-imports
-	const SerialPort = require("serialport") as typeof import("serialport");
-	return new SerialPort(path, options, callback) as unknown as SerialPortLike;
+	const { SerialPort } = require("serialport") as typeof import("serialport");
+	return new SerialPort({ path, baudRate: options.baudRate }, callback) as unknown as SerialPortLike;
 };
 
 export class VictronBmvCom {
