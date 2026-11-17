@@ -14,11 +14,24 @@ function makeFrame(fields: Field[], leadingNewline = true): Buffer {
 }
 
 function makeFrameWithChecksum(target: number): Buffer {
-	for (let first = 32; first <= 126; first++) {
-		for (let second = 32; second <= 126; second++) {
-			const frame = makeFrame([["V", "13118"], ["X_PAD", String.fromCharCode(first, second)]]);
-			if (frame[frame.length - 1] === target) {
-				return frame;
+	const empty = makeFrame([["V", "13118"], ["X_PAD", ""]]);
+	const required = (empty[empty.length - 1] - target) & 0xff;
+	const buildPadding = (sum: number, length: number): string | undefined => {
+		if (length === 0) return sum === 0 ? "" : undefined;
+		for (let byte = 32; byte <= 126; byte++) {
+			if (byte === 0x3a) continue;
+			const rest = sum - byte;
+			if (rest < 32 * (length - 1) || rest > 126 * (length - 1)) continue;
+			const tail = buildPadding(rest, length - 1);
+			if (tail !== undefined) return String.fromCharCode(byte) + tail;
+		}
+		return undefined;
+	};
+	for (let length = 1; length <= 4; length++) {
+		for (let sum = required; sum <= 126 * length; sum += 256) {
+			const padding = buildPadding(sum, length);
+			if (padding !== undefined) {
+				return makeFrame([["V", "13118"], ["X_PAD", padding]]);
 			}
 		}
 	}
@@ -108,6 +121,15 @@ describe("VE.Direct byte parser", () => {
 		expect(parser.unknownFields).to.equal(1);
 	});
 
+	it("ignores inherited property names without discarding known values", () => {
+		const parser = new VeDirectParser();
+		const frames = collect(parser);
+		parser.receive(makeFrame([["toString", "123"], ["V", "13118"]]));
+		expect(frames).to.deep.equal([{ V: 13.118 }]);
+		expect(parser.unknownFields).to.equal(1);
+		expect(parser.invalidFrames).to.equal(0);
+	});
+
 	it("publishes only fields contained in each of multiple blocks", () => {
 		const parser = new VeDirectParser();
 		const frames = collect(parser);
@@ -120,16 +142,25 @@ describe("VE.Direct byte parser", () => {
 		expect(frames[1]).not.to.have.property("V");
 	});
 
-	it("excludes asynchronous HEX messages before, during and after TEXT frames", () => {
+	it("discards HEX-interrupted TEXT frames and resynchronizes at the next block", () => {
 		const frame = makeFrame(officialFields);
+		const next = makeFrame([["I", "1000"]]);
 		for (const position of [0, 20, Math.floor(frame.length / 2), frame.length - 1, frame.length]) {
 			const parser = new VeDirectParser();
 			const frames = collect(parser);
-			const withHex = Buffer.concat([frame.subarray(0, position), Buffer.from(":A1234\n"), frame.subarray(position)]);
+			const withHex = Buffer.concat([
+				frame.subarray(0, position),
+				Buffer.from(":A1234\n"),
+				frame.subarray(position),
+				next,
+			]);
 			parser.receive(withHex);
-			expect(frames, `HEX at ${position}`).to.have.length(1);
-			expect(frames[0].V).to.equal(26.201);
-			expect(parser.hexMessages).to.equal(1);
+			if (position === 0 || position === frame.length) {
+				expect(frames.some(item => item.V === 26.201), `HEX outside TEXT at ${position}`).to.equal(true);
+			} else {
+				expect(frames.some(item => item.V !== undefined), `interrupted TEXT at ${position}`).to.equal(false);
+			}
+			expect(frames[frames.length - 1], `next block after HEX at ${position}`).to.deep.equal({ I: 1 });
 		}
 	});
 
@@ -154,10 +185,95 @@ describe("VE.Direct byte parser", () => {
 		expect(parser.unknownFields).to.equal(1);
 	});
 
+	it("keeps checksum 0x3A plus following :A bytes identical at every chunk boundary", () => {
+		const frame = makeFrameWithChecksum(0x3a);
+		const next = makeFrame([["I", "1000"]]);
+		const stream = Buffer.concat([
+			frame.subarray(0, frame.length - 1),
+			Buffer.from(":A1234\n"),
+			frame.subarray(frame.length - 1),
+			next,
+		]);
+		for (let split = 0; split <= stream.length; split++) {
+			const parser = new VeDirectParser();
+			const frames = collect(parser);
+			parser.receive(stream.subarray(0, split));
+			parser.receive(stream.subarray(split));
+			expect(frames, `split ${split}`).to.deep.equal([{ V: 13.118 }, { I: 1 }]);
+			expect(parser.checksumErrors, `split ${split}`).to.equal(0);
+		}
+	});
+
+	it("immediately rejects a corrupted frame whose received checksum is 0x3A", () => {
+		const frame = makeFrameWithChecksum(0x3a);
+		frame[5] ^= 1;
+		const parser = new VeDirectParser();
+		const frames = collect(parser);
+		parser.receive(frame);
+		expect(frames).to.have.length(0);
+		expect(parser.checksumErrors).to.equal(1);
+	});
+
+	it("recovers at every line-limit boundary, including 127 and 128 bytes", () => {
+		for (const length of [127, 128, 129, 200]) {
+			const parser = new VeDirectParser();
+			const frames = collect(parser);
+			parser.receive(Buffer.concat([Buffer.from("\r\n"), Buffer.from("X".repeat(length)), makeFrame([["V", "13118"]])]));
+			expect(frames, `garbage length ${length}`).to.deep.equal([{ V: 13.118 }]);
+			expect(parser.invalidFrames, `garbage length ${length}`).to.equal(1);
+		}
+	});
+
+	it("resynchronizes on the first complete block after an orphaned checksum byte", () => {
+		const parser = new VeDirectParser();
+		const frames = collect(parser);
+		parser.receive(Buffer.concat([Buffer.from([0xd8]), makeFrame([["I", "1000"]])]));
+		expect(frames).to.deep.equal([{ I: 1 }]);
+	});
+
+	it("accepts every possible binary checksum byte", () => {
+		for (let checksum = 0; checksum <= 0xff; checksum++) {
+			const parser = new VeDirectParser();
+			const frames = collect(parser);
+			parser.receive(makeFrameWithChecksum(checksum));
+			expect(frames, `checksum ${checksum}`).to.deep.equal([{ V: 13.118 }]);
+		}
+	});
+
+	it("parses real BMV-602S production values with corrected semantics", () => {
+		const parser = new VeDirectParser();
+		const frames = collect(parser);
+		parser.receive(makeFrame([
+			["V", "13336"],
+			["I", "2213"],
+			["SOC", "1000"],
+			["TTG", "-1"],
+			["BMV", "602S"],
+			["FW", "211"],
+			["H1", "-651715"],
+			["H3", "-398413"],
+			["H4", "29"],
+			["H6", "-73183800"],
+		]));
+		expect(frames).to.deep.equal([{
+			V: 13.336,
+			I: 2.213,
+			SOC: 100,
+			TTG: null,
+			TTGInfinite: true,
+			BMV: "602S",
+			FW: "211",
+			H1: -651.715,
+			H3: -398.413,
+			H4: 29,
+			H6: -73183.8,
+		}]);
+	});
+
 	it("bounds malformed input and recovers after reset", () => {
 		const parser = new VeDirectParser();
 		const frames = collect(parser);
-		parser.receive(Buffer.from("X".repeat(200)));
+		parser.receive(Buffer.from(`\r\n${"X".repeat(200)}`));
 		expect(parser.invalidFrames).to.equal(1);
 		parser.receive(makeFrame([["V", "13118"]]));
 		expect(frames).to.deep.equal([{ V: 13.118 }]);

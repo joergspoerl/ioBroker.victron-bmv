@@ -1,21 +1,43 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.VictronBmvCom = void 0;
+exports.VictronBmvCom = exports.SERIAL_CLOSE_TIMEOUT_MS = exports.SERIAL_OPEN_TIMEOUT_MS = void 0;
 const veDirectParser_1 = require("./veDirect/veDirectParser");
+exports.SERIAL_OPEN_TIMEOUT_MS = 10000;
+exports.SERIAL_CLOSE_TIMEOUT_MS = 5000;
+class SerialOperationTimeoutError extends Error {
+    constructor(operation, timeoutMs) {
+        super(`Serial ${operation} timed out after ${timeoutMs} ms`);
+        this.name = "SerialOperationTimeoutError";
+    }
+}
 const defaultPortFactory = (path, options, callback) => {
     // Load native bindings only for a real open, not for parser/unit tests.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { SerialPort } = require("serialport");
     return new SerialPort({ path, baudRate: options.baudRate }, callback);
 };
+function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
 class VictronBmvCom {
-    constructor(portFactory = defaultPortFactory) {
+    constructor(portFactory = defaultPortFactory, options = {}) {
+        var _a, _b;
         this.portFactory = portFactory;
         this.parser = new veDirectParser_1.VeDirectParser();
-        this.closeListeners = new WeakMap();
+        this.closeRequestId = 0;
+        this.portStates = new WeakMap();
+        this.closeWaiters = new WeakMap();
         this.errorListener = (error) => {
             this.reportError(error);
         };
+        this.openTimeoutMs = (_a = options.openTimeoutMs) !== null && _a !== void 0 ? _a : exports.SERIAL_OPEN_TIMEOUT_MS;
+        this.closeTimeoutMs = (_b = options.closeTimeoutMs) !== null && _b !== void 0 ? _b : exports.SERIAL_CLOSE_TIMEOUT_MS;
         this.parser.onFrame = frame => {
             if (this.onFrame) {
                 this.onFrame({ ...frame });
@@ -26,73 +48,132 @@ class VictronBmvCom {
                 this.onValidFrame();
             }
         };
-        this.dataListener = data => {
-            try {
-                this.parser.receive(Buffer.from(data));
-            }
-            catch (error) {
-                this.reportError(error);
-            }
-        };
     }
     isOpen() {
         var _a;
         return ((_a = this.port) === null || _a === void 0 ? void 0 : _a.isOpen) === true;
     }
-    async open(serialportPath) {
-        if (this.closePromise) {
-            await this.closePromise.catch(() => undefined);
-        }
-        if (this.isOpen()) {
-            return;
-        }
+    open(serialportPath) {
         if (this.openPromise) {
             return this.openPromise;
         }
-        this.parser.reset();
-        const operation = new Promise((resolve, reject) => {
-            let port;
-            try {
-                port = this.portFactory(serialportPath, { baudRate: 19200 }, openError => {
-                    if (openError) {
-                        this.openFailed(port, openError);
-                        reject(openError);
-                        return;
-                    }
-                    port.set({ dtr: false, rts: false, cts: false, brk: false }, setError => {
-                        if (setError) {
-                            this.openFailed(port, setError);
-                            reject(setError);
-                            return;
-                        }
-                        port.on("data", this.dataListener);
-                        const closeListener = () => {
-                            if (this.port === port) {
-                                this.port = undefined;
-                                this.parser.reset();
-                            }
-                        };
-                        this.closeListeners.set(port, closeListener);
-                        port.on("close", closeListener);
-                        resolve();
-                    });
-                });
-                this.port = port;
-                port.on("error", this.errorListener);
-            }
-            catch (error) {
-                reject(error);
-            }
-        });
+        const operation = this.performOpen(serialportPath, this.closeRequestId);
         this.openPromise = operation;
-        try {
-            await operation;
+        const clear = () => {
+            if (this.openPromise === operation) {
+                this.openPromise = undefined;
+            }
+        };
+        void operation.then(clear, clear);
+        return operation;
+    }
+    async performOpen(serialportPath, closeRequest) {
+        if (this.closePromise) {
+            await this.closePromise.catch(() => undefined);
         }
-        finally {
-            this.openPromise = undefined;
+        this.assertNotCloseRequested(closeRequest);
+        const existing = this.port;
+        if (existing) {
+            const state = this.portStates.get(existing);
+            if (existing.isOpen && (state === null || state === void 0 ? void 0 : state.ready) && !state.closed) {
+                return;
+            }
+            if (existing.isOpen) {
+                await this.closePort(existing);
+            }
+            else if ((state === null || state === void 0 ? void 0 : state.failed) && !state.closed) {
+                // Keep its late-open callback/listeners alive, but do not let it
+                // become the current session after a replacement opens.
+                this.port = undefined;
+            }
+            else {
+                this.cleanupPort(existing);
+            }
+        }
+        this.assertNotCloseRequested(closeRequest);
+        this.parser.reset();
+        const openResult = deferred();
+        let port;
+        const state = {
+            closed: false,
+            ready: false,
+            failed: false,
+            rejectPending: openResult.reject,
+            closeListener: () => undefined,
+            dataListener: () => undefined,
+        };
+        const openCallback = (error) => {
+            // A factory may legally call back synchronously. Deferring guarantees
+            // that the returned port and all listeners have been installed first.
+            queueMicrotask(() => {
+                if (state.failed) {
+                    if (!error && (port === null || port === void 0 ? void 0 : port.isOpen)) {
+                        void this.closeLatePort(port);
+                    }
+                    return;
+                }
+                if (error) {
+                    openResult.reject(error);
+                }
+                else {
+                    openResult.resolve();
+                }
+            });
+        };
+        try {
+            port = this.portFactory(serialportPath, { baudRate: 19200 }, openCallback);
+            state.closeListener = () => this.handlePortClosed(port);
+            state.dataListener = data => {
+                if (this.port !== port || !state.ready || state.closed) {
+                    return;
+                }
+                try {
+                    this.parser.receive(Buffer.from(data));
+                }
+                catch (error) {
+                    this.reportError(error);
+                }
+            };
+            this.portStates.set(port, state);
+            this.port = port;
+            port.on("error", this.errorListener);
+            port.on("close", state.closeListener);
+            await this.withTimeout(openResult.promise, this.openTimeoutMs, "open");
+            state.rejectPending = undefined;
+            this.assertPortUsable(port, state);
+            this.assertNotCloseRequested(closeRequest);
+            const setResult = deferred();
+            state.rejectPending = setResult.reject;
+            port.set({ dtr: false, rts: false, cts: false, brk: false }, error => {
+                if (error)
+                    setResult.reject(error);
+                else
+                    setResult.resolve();
+            });
+            await this.withTimeout(setResult.promise, this.openTimeoutMs, "set");
+            state.rejectPending = undefined;
+            this.assertPortUsable(port, state);
+            this.assertNotCloseRequested(closeRequest);
+            port.on("data", state.dataListener);
+            state.ready = true;
+        }
+        catch (error) {
+            const normalized = this.asError(error);
+            state.failed = true;
+            state.ready = false;
+            state.rejectPending = undefined;
+            if (port) {
+                await this.handleOpenFailure(port, normalized);
+            }
+            throw normalized;
         }
     }
     close() {
+        var _a, _b;
+        this.closeRequestId++;
+        if (this.port) {
+            (_b = (_a = this.portStates.get(this.port)) === null || _a === void 0 ? void 0 : _a.rejectPending) === null || _b === void 0 ? void 0 : _b.call(_a, new Error("Serial close requested"));
+        }
         if (this.closePromise) {
             return this.closePromise;
         }
@@ -115,67 +196,132 @@ class VictronBmvCom {
             this.parser.reset();
             return;
         }
-        port.removeListener("data", this.dataListener);
-        this.parser.reset();
+        await this.closePort(port);
+    }
+    async closePort(port) {
+        const state = this.portStates.get(port);
+        if (!state || state.closed || !port.isOpen) {
+            this.cleanupPort(port);
+            return;
+        }
+        state.ready = false;
+        port.removeListener("data", state.dataListener);
+        if (this.port === port) {
+            this.parser.reset();
+        }
+        const callbackResult = deferred();
+        const closeEvent = deferred();
+        this.closeWaiters.set(port, () => closeEvent.resolve());
         try {
-            if (port.isOpen) {
-                await new Promise((resolve, reject) => {
-                    port.close(error => error ? reject(error) : resolve());
-                });
-            }
-            if (port.isOpen) {
+            port.close(error => error ? callbackResult.reject(error) : callbackResult.resolve());
+            await this.withTimeout(Promise.race([callbackResult.promise, closeEvent.promise]), this.closeTimeoutMs, "close");
+            if (!state.closed && port.isOpen) {
                 throw new Error("Serial port remained open after close");
             }
             this.cleanupPort(port);
         }
         catch (error) {
-            if (port.isOpen) {
+            if (!state.closed && port.isOpen) {
                 // Keep a still-open port referenced and retryable. Never lose it or
                 // remove its error listener while the OS resource is alive.
                 this.port = port;
+                state.ready = false;
             }
             else {
                 this.cleanupPort(port);
             }
             throw error;
         }
+        finally {
+            this.closeWaiters.delete(port);
+        }
     }
-    openFailed(port, error) {
-        if (this.port === port) {
-            this.port = undefined;
-        }
+    async handleOpenFailure(port, error) {
+        const state = this.portStates.get(port);
         this.parser.reset();
-        port.removeListener("data", this.dataListener);
-        this.removeCloseListener(port);
-        if (port.isOpen) {
-            port.close(closeError => {
-                if (closeError) {
-                    this.reportError(closeError);
-                }
-            });
+        if (state) {
+            port.removeListener("data", state.dataListener);
         }
-        else {
-            port.removeListener("error", this.errorListener);
+        try {
+            if (port.isOpen && !(state === null || state === void 0 ? void 0 : state.closed)) {
+                await this.closePort(port);
+            }
+            else if (!(error instanceof SerialOperationTimeoutError && (state === null || state === void 0 ? void 0 : state.failed))) {
+                this.cleanupPort(port);
+            }
+        }
+        catch (closeError) {
+            this.reportError(closeError);
         }
         this.reportError(error);
     }
+    async closeLatePort(port) {
+        try {
+            await this.closePort(port);
+        }
+        catch (error) {
+            this.reportError(error);
+        }
+    }
+    handlePortClosed(port) {
+        var _a, _b;
+        const state = this.portStates.get(port);
+        if (!state || state.closed) {
+            return;
+        }
+        state.closed = true;
+        state.ready = false;
+        (_a = state.rejectPending) === null || _a === void 0 ? void 0 : _a.call(state, new Error("Serial port closed while opening"));
+        state.rejectPending = undefined;
+        (_b = this.closeWaiters.get(port)) === null || _b === void 0 ? void 0 : _b();
+        if (this.port === port) {
+            this.port = undefined;
+            this.parser.reset();
+        }
+        this.cleanupPort(port);
+    }
+    assertPortUsable(port, state) {
+        if (state.closed || !port.isOpen) {
+            throw new Error("Serial port closed while opening");
+        }
+    }
+    assertNotCloseRequested(closeRequest) {
+        if (closeRequest !== this.closeRequestId) {
+            throw new Error("Serial open cancelled by close request");
+        }
+    }
     cleanupPort(port) {
+        const state = this.portStates.get(port);
         if (this.port === port) {
             this.port = undefined;
         }
-        port.removeListener("data", this.dataListener);
-        this.removeCloseListener(port);
+        if (state) {
+            port.removeListener("data", state.dataListener);
+            port.removeListener("close", state.closeListener);
+            state.ready = false;
+        }
         port.removeListener("error", this.errorListener);
     }
-    removeCloseListener(port) {
-        const listener = this.closeListeners.get(port);
-        if (listener) {
-            port.removeListener("close", listener);
-            this.closeListeners.delete(port);
-        }
+    withTimeout(promise, timeoutMs, operation) {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new SerialOperationTimeoutError(operation, timeoutMs)), timeoutMs);
+            if (typeof timer.unref === "function") {
+                timer.unref();
+            }
+            promise.then(value => {
+                clearTimeout(timer);
+                resolve(value);
+            }, error => {
+                clearTimeout(timer);
+                reject(error);
+            });
+        });
+    }
+    asError(error) {
+        return error instanceof Error ? error : new Error(String(error));
     }
     reportError(error) {
-        const normalized = error instanceof Error ? error : new Error(String(error));
+        const normalized = this.asError(error);
         if (this.onError) {
             this.onError(normalized);
         }

@@ -1,9 +1,13 @@
+import { EventEmitter } from "events";
 import { expect } from "chai";
 import proxyquire from "proxyquire";
 import * as sinon from "sinon";
+import { VeDirectParser } from "./veDirect/veDirectParser";
+
+class Adapter extends EventEmitter {}
 
 const { VictronBmv } = proxyquire.noCallThru()("./main", {
-	"@iobroker/adapter-core": { Adapter: class {} },
+	"@iobroker/adapter-core": { Adapter },
 }) as typeof import("./main");
 
 function harness(): any {
@@ -16,16 +20,28 @@ function harness(): any {
 		onError: undefined,
 	};
 	adapter.config = { serialPortPath: "/dev/fake" };
+	adapter.serialPortPath = "/dev/fake";
 	adapter.log = { debug: sinon.stub(), info: sinon.stub(), warn: sinon.stub(), error: sinon.stub() };
 	adapter.setStateAsync = sinon.stub().resolves();
 	adapter.lastFrameTime = 0;
 	adapter.lastOpenAttempt = 0;
+	adapter.activeWatchDog = undefined;
+	adapter.readyPromise = undefined;
+	adapter.unloadPromise = undefined;
 	adapter.frameQueue = Promise.resolve();
 	adapter.connectionState = undefined;
+	adapter.connectionRequested = undefined;
 	adapter.unloaded = false;
 	adapter.stateQueues = new Map();
 	adapter.lastStateValues = new Map();
 	return adapter;
+}
+
+function makeFrame(fields: [string, string][]): Buffer {
+	const body = Buffer.from(`\r\n${fields.map(([label, value]) => `${label}\t${value}\r\n`).join("")}Checksum\t`);
+	let sum = 0;
+	for (const byte of body) sum = (sum + byte) & 0xff;
+	return Buffer.concat([body, Buffer.from([(256 - sum) & 0xff])]);
 }
 
 describe("VE.Direct ioBroker state publication", () => {
@@ -49,15 +65,14 @@ describe("VE.Direct ioBroker state publication", () => {
 		adapter.setStateAsync.withArgs("V").onFirstCall().returns(gate);
 		const frame = { V: 13.1 };
 
-		const first = adapter.publishFrame(frame);
-		await new Promise(resolve => setImmediate(resolve));
+		adapter.enqueueFrame(frame);
 		frame.V = 99;
-		const second = adapter.publishFrame({ V: 13.2 });
+		adapter.enqueueFrame({ V: 13.2 });
 		await new Promise(resolve => setImmediate(resolve));
 		expect(adapter.setStateAsync.withArgs("V").callCount).to.equal(1);
 
 		release();
-		await Promise.all([first, second]);
+		await adapter.frameQueue;
 		const values = adapter.setStateAsync.getCalls().filter((call: any) => call.args[0] === "V").map((call: any) => call.args[1].val);
 		expect(values).to.deep.equal([13.1, 13.2]);
 		expect(adapter.lastStateValues.get("V")).to.equal(13.2);
@@ -92,8 +107,66 @@ describe("VE.Direct ioBroker state publication", () => {
 	});
 });
 
+describe("VE.Direct ready and object lifecycle", () => {
+	for (const method of ["setObjectNotExistsAsync", "extendObjectAsync"]) {
+		it(`handles ${method} failures through the real ready event without unhandled rejection`, async () => {
+			const adapter: any = new VictronBmv();
+			const expected = new Error("object db unavailable");
+			adapter.config = { serialPortPath: "/dev/fake" };
+			adapter.log = { error: sinon.stub() };
+			adapter.setStateAsync = sinon.stub().resolves();
+			adapter.setObjectNotExistsAsync = sinon.stub().resolves();
+			adapter.extendObjectAsync = sinon.stub().resolves();
+			adapter[method].rejects(expected);
+
+			adapter.emit("ready");
+			await adapter.readyPromise;
+			await new Promise(resolve => setImmediate(resolve));
+			expect(adapter.log.error.called).to.equal(true);
+			expect(adapter.log.error.firstCall.args[0]).to.contain("object db unavailable");
+			expect(adapter.watchDogInterval).to.equal(undefined);
+		});
+	}
+
+	it("migrates existing info.connection metadata", async () => {
+		const adapter = harness();
+		adapter.setObjectNotExistsAsync = sinon.stub().resolves();
+		adapter.extendObjectAsync = sinon.stub().resolves();
+		await adapter.initObjects();
+		expect(adapter.extendObjectAsync.calledWith("info.connection", {
+			common: {
+				name: "Fresh valid VE.Direct frame received",
+				type: "boolean",
+				role: "indicator.connected",
+				read: true,
+				write: false,
+				def: false,
+			},
+		})).to.equal(true);
+	});
+
+	it("stops object initialization after unload and waits for the pending ready operation", async () => {
+		const adapter = harness();
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => release = resolve);
+		adapter.setObjectNotExistsAsync = sinon.stub().returns(gate);
+		adapter.extendObjectAsync = sinon.stub().resolves();
+		adapter.handleReady();
+		await new Promise(resolve => setImmediate(resolve));
+		const callback = sinon.stub();
+		adapter.onUnload(callback);
+		expect(callback.called).to.equal(false);
+		release();
+		await adapter.readyPromise;
+		await adapter.unloadPromise;
+		expect(adapter.setObjectNotExistsAsync.callCount).to.equal(1);
+		expect(adapter.extendObjectAsync.called).to.equal(false);
+		expect(callback.calledOnce).to.equal(true);
+	});
+});
+
 describe("VE.Direct configuration lifecycle", () => {
-	for (const path of ["", "/dev/xxx"]) {
+	for (const path of ["", "/dev/xxx", "   ", " /dev/xxx "]) {
 		it(`clears a previous connection state for invalid path ${JSON.stringify(path)}`, async () => {
 			const adapter = harness();
 			adapter.config.serialPortPath = path;
@@ -105,6 +178,15 @@ describe("VE.Direct configuration lifecycle", () => {
 			expect(adapter.watchDogInterval).to.equal(undefined);
 		});
 	}
+	it("trims a valid serial path before opening", async () => {
+		const adapter = harness();
+		adapter.config.serialPortPath = "  /dev/fake  ";
+		adapter.initObjects = sinon.stub().resolves();
+		adapter.watchDog = sinon.stub().resolves();
+		await adapter.onReady();
+		if (adapter.watchDogInterval) clearInterval(adapter.watchDogInterval);
+		expect(adapter.serialPortPath).to.equal("/dev/fake");
+	});
 });
 
 describe("VE.Direct watchdog", () => {
@@ -142,11 +224,59 @@ describe("VE.Direct watchdog", () => {
 		expect(adapter.bmv.open.calledOnce).to.equal(true);
 	});
 
-	it("reports only a checksum-valid published frame as connected", async () => {
+	it("uses real parser checksums for liveness and state publication", async () => {
 		const adapter = harness();
-		await adapter.publishFrame({ V: 13.1 });
+		const parser = new VeDirectParser();
+		parser.onValidFrame = () => adapter.bmv.onValidFrame?.();
+		parser.onFrame = frame => adapter.bmv.onFrame?.(frame);
+		adapter.initObjects = sinon.stub().resolves();
+		adapter.watchDog = sinon.stub().resolves();
+		await adapter.onReady();
+		if (adapter.watchDogInterval) clearInterval(adapter.watchDogInterval);
+
+		const corrupted = makeFrame([["V", "13118"]]);
+		corrupted[5] ^= 1;
+		parser.receive(corrupted);
+		await new Promise(resolve => setImmediate(resolve));
+		expect(adapter.connectionState).to.equal(false);
+		expect(adapter.setStateAsync.calledWith("V")).to.equal(false);
+
+		parser.receive(makeFrame([["V", "13118"]]));
+		await adapter.frameQueue;
+		await new Promise(resolve => setImmediate(resolve));
 		expect(adapter.connectionState).to.equal(true);
-		expect(adapter.setStateAsync.calledWith("info.connection", { val: true, ack: true })).to.equal(true);
+		expect(adapter.setStateAsync.calledWith("V", { val: 13.118, ack: true })).to.equal(true);
+		expect(parser.checksumErrors).to.equal(1);
+	});
+
+	it("deduplicates overlapping watchdog runs", async () => {
+		const adapter = harness();
+		let release!: () => void;
+		adapter.bmv.open.returns(new Promise<void>(resolve => release = resolve));
+		const first = adapter.watchDog();
+		const second = adapter.watchDog();
+		expect(second).to.equal(first);
+		release();
+		await first;
+		expect(adapter.bmv.open.calledOnce).to.equal(true);
+	});
+
+	it("does not reconnect when a fresh frame arrives during the connection-state await", async () => {
+		const adapter = harness();
+		adapter.bmv.isOpen.returns(true);
+		let releaseFalse!: () => void;
+		adapter.setStateAsync.withArgs("info.connection", { val: false, ack: true }).returns(new Promise<void>(resolve => releaseFalse = resolve));
+		const watchdog = adapter.watchDog();
+		await new Promise(resolve => setImmediate(resolve));
+		adapter.bmv.onValidFrame = () => {
+			adapter.lastFrameTime = Date.now();
+			void adapter.safeSetConnectionState(true);
+		};
+		adapter.bmv.onValidFrame();
+		releaseFalse();
+		await watchdog;
+		expect(adapter.bmv.close.called).to.equal(false);
+		expect(adapter.bmv.open.called).to.equal(false);
 	});
 
 	it("does not reopen after unload while a watchdog close is pending", async () => {
@@ -169,6 +299,17 @@ describe("VE.Direct watchdog", () => {
 });
 
 describe("VE.Direct unload", () => {
+	it("writes a final acknowledged not-connected state before the callback", async () => {
+		const adapter = harness();
+		await adapter.publishFrame({ V: 13.1 });
+		const callback = sinon.stub();
+		adapter.onUnload(callback);
+		await adapter.unloadPromise;
+		expect(adapter.setStateAsync.lastCall.args).to.deep.equal(["info.connection", { val: false, ack: true }]);
+		expect(adapter.connectionState).to.equal(false);
+		expect(callback.calledOnce).to.equal(true);
+	});
+
 	it("waits for the asynchronous port close and calls back once", async () => {
 		const adapter = harness();
 		let release!: () => void;

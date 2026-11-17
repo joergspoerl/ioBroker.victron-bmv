@@ -2,7 +2,6 @@
 
 # ioBroker.victron-bmv
 
-[![NPM version](https://img.shields.io/npm/v/iobroker.victron-bmv.svg)](https://www.npmjs.com/package/iobroker.victron-bmv)
 [![Test and Release](https://github.com/joergoss/ioBroker.victron-bmv/actions/workflows/test-and-release.yml/badge.svg)](https://github.com/joergoss/ioBroker.victron-bmv/actions/workflows/test-and-release.yml)
 
 Read-only ioBroker-Adapter für Victron-BMV-Batteriemonitore und kompatible VE.Direct-Geräte über das serielle **TEXT-Protokoll**.
@@ -12,7 +11,7 @@ Read-only ioBroker-Adapter für Victron-BMV-Batteriemonitore und kompatible VE.D
 - Byteorientierter VE.Direct-Parser mit Modulo-256-Checksumme.
 - Sofortiger Frameabschluss direkt nach dem Checksum-Byte, auch ohne zusätzliches CRLF.
 - Sichere Behandlung beliebiger Chunk-Grenzen, mehrerer Blöcke und unbekannter Felder.
-- Asynchrone HEX-Nachrichten (`:A…LF`) werden aus dem TEXT-Stream ausgeschlossen.
+- Asynchrone HEX-Nachrichten (`:A…LF`) werden erkannt; einen unterbrochenen TEXT-Block verwirft der Parser kontrolliert und resynchronisiert am nächsten Block.
 - Atomare Frames: Nur checksumgültige und tatsächlich enthaltene Felder werden publiziert.
 - `info.connection` folgt frischen gültigen Daten, nicht nur einem offenen Serial-Port.
 - Keine HEX-Schreibbefehle und keine Gerätekonfiguration über diesen Adapter.
@@ -44,6 +43,8 @@ Offizielle Referenzen:
 - `info.connection=true`: Innerhalb der letzten fünf Sekunden wurde mindestens ein checksumgültiger Block verarbeitet.
 - `info.connection=false`: Kein frischer gültiger Block, Serial-Fehler oder Adapter noch nicht verbunden.
 - Ein offener, aber stummer Port wird nicht mehr als verbunden angezeigt, sondern kontrolliert geschlossen und erneut geöffnet.
+- Open/Set besitzen ein 10-Sekunden-Timeout, Close ein 5-Sekunden-Timeout; späte Callbacks einer alten Session werden nicht als aktuelle Daten übernommen.
+- Beim kontrollierten Adapterstopp wird `info.connection=false` quittiert, bevor der Unload abschließt.
 - Ungültige Checksummen, unbekannte Felder und beschädigte Frames erzeugen keine erfundenen Messwerte.
 - States werden nur bei Änderungen geschrieben und erhalten `ack=true`, wenn sie aus einem gültigen Geräteblock stammen.
 
@@ -102,14 +103,22 @@ Offizielle Referenzen:
 | `H14` | – | High-Aux-Voltage-Alarme |
 | `H15` | V | Minimale Auxiliary-Spannung, mV / 1000 |
 | `H16` | V | Maximale Auxiliary-Spannung, mV / 1000 |
-| `H17` | kWh | Entladene/produzierte Energie, 0.01 kWh / 100 |
-| `H18` | kWh | Geladene Energie, 0.01 kWh / 100 |
+| `H17` | kWh | Entladene/produzierte Energie, Rohwert × 0.01 |
+| `H18` | kWh | Geladene/verbrauchte Energie, Rohwert × 0.01 |
 
 ## Mehrere Protokollblöcke
 
 VE.Direct darf Laufzeit- und Historiewerte in unterschiedlichen Blöcken senden. Jeder Block besitzt eine eigene Checksumme. Der Adapter publiziert nur die tatsächlich enthaltenen Felder und verändert keine anderen States. Dadurch bleibt der letzte gültige Wert anderer Blöcke erhalten, ohne fehlende Felder als `0` vorzutäuschen.
 
-Asynchrone HEX-Nachrichten können TEXT-Blöcke unterbrechen. Sie werden aus der TEXT-Checksumme ausgeschlossen und nicht als Messwerte interpretiert. HEX-Lese-/Schreibkommandos sind außerhalb des Adapterumfangs.
+Asynchrone HEX-Nachrichten können TEXT-Blöcke unterbrechen. Entsprechend der offiziellen FAQ-Referenz hat im `CHECKSUM`-Zustand das binäre Checksumbyte Vorrang vor einem Doppelpunkt. Ein HEX-unterbrochener TEXT-Block wird nicht publiziert; der Parser resynchronisiert am nächsten vollständigen Block. HEX-Lese-/Schreibkommandos sind außerhalb des Adapterumfangs.
+
+## Migration von 0.0.3
+
+- Bestehende State-Objekte und deren Namen, Rollen und Einheiten werden beim Start automatisch aktualisiert.
+- `H4`/`H5` werden als ganzzahlige Zähler und `H6` mit korrekter mAh→Ah-Skalierung aktualisiert.
+- `TTG=-1` ersetzt den früheren negativen Stundenwert durch `TTG=null` und `TTGInfinite=true`.
+- `H9` bleibt bewusst in Tagen (`unit=d`); die frühere beschreibende `unit` wird korrigiert.
+- Bereits in History-Datenbanken gespeicherte Altwerte werden nicht rückwirkend verändert. Neue gültige Geräteblöcke aktualisieren die aktuellen States automatisch.
 
 ## Entwicklung und Tests
 
@@ -117,22 +126,19 @@ Der vollständige Audit ist in [docs/audit-2026-11-17.md](docs/audit-2026-11-17.
 
 ```bash
 npm ci
-npm run check
-npm run lint
-npm test
-npm run build
-npm run test:integration
+npm run test:all
 ```
 
-Die Tests verwenden offizielle Rohframes, alle Chunk-Grenzen, binäre Checksum-Werte, Multiblock-Streams, asynchrone HEX-Nachrichten und SerialPort-Mocks. Reale Hardware oder serielle Native-Treiber sind für die Unit-Tests nicht erforderlich.
+`test:all` umfasst TypeScript-/Protokoll-/Lifecycle-Tests, Package-Checks, Typecheck, ESLint, Build und js-controller-Integration. Die CI-Matrix deckt Node.js 18, 20, 22, 24 und 26 auf Linux, Windows und macOS ab. Die Tests verwenden offizielle Rohframes, alle Chunk-Grenzen, alle 256 binären Checksum-Werte, Multiblock-Streams, asynchrone HEX-Nachrichten, reale BMV-602S-Produktionsvektoren und SerialPort-Mocks. Reale Hardware oder serielle Native-Treiber sind für die Unit-Tests nicht erforderlich.
 
 ## Changelog
 
 ### **WORK IN PROGRESS**
 - (joerg) VE.Direct-Feldskalierung, Metadaten und Sonderwerte korrigiert (#2).
-- (joerg) Serial-Watchdog, State-Serialisierung und Unload sicher überarbeitet (#3).
-- (joerg) Byteorientierter Parser mit Multiblock-/HEX-/Recovery-Tests neu aufgebaut (#4).
-- (joerg) Admin, Paket, CI und Dokumentation modernisiert (#1).
+- (joerg) Serial-Watchdog, State-Serialisierung und Unload sicher überarbeitet (#3, #9).
+- (joerg) Byteorientierter Parser mit Multiblock-/HEX-/Recovery-Tests neu aufgebaut (#4, #10).
+- (joerg) SerialPort 12 mit ARMv7-Prebuilds und Node.js-18-kompatibler Testsuite eingeführt (#6, #8).
+- (joerg) Admin, Paket, CI und Dokumentation modernisiert; vollständiger pi3-Audit integriert (#1, #7).
 
 ### 0.0.3 (2022-01-11)
 - (joerg) Nicht verwendete Konfigurationsoptionen entfernt und Batteriestromzuordnung korrigiert.

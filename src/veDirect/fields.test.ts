@@ -54,7 +54,9 @@ describe("VE.Direct field conversion", () => {
 		expect(decodeVeDirectField("MON", "1")).to.deep.equal({ MON: 1 });
 	});
 
-	it("ignores unknown fields without throwing", () => {
-		expect(decodeVeDirectField("X_NEW", "123")).to.equal(null);
+	it("ignores unknown fields, including inherited object property names", () => {
+		for (const label of ["X_NEW", "toString", "constructor", "__proto__", "hasOwnProperty", "valueOf"]) {
+			expect(decodeVeDirectField(label, "123"), label).to.equal(null);
+		}
 	});
 });

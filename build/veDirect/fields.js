@@ -101,12 +101,14 @@ const fields = [
     define("H17", "number", "value.energy", "kWh", "Discharged/produced energy", numeric(0.01), "Transmitted in 0.01 kWh"),
     define("H18", "number", "value.energy", "kWh", "Cumulative charged energy", numeric(0.01), "Transmitted in 0.01 kWh"),
 ];
-exports.VE_DIRECT_FIELDS = {};
+exports.VE_DIRECT_FIELDS = Object.create(null);
 for (const field of fields) {
     exports.VE_DIRECT_FIELDS[field.id] = field;
 }
 function decodeVeDirectField(label, value) {
-    const field = exports.VE_DIRECT_FIELDS[label];
-    return field ? field.decode(value) : null;
+    if (!Object.prototype.hasOwnProperty.call(exports.VE_DIRECT_FIELDS, label)) {
+        return null;
+    }
+    return exports.VE_DIRECT_FIELDS[label].decode(value);
 }
 //# sourceMappingURL=fields.js.map

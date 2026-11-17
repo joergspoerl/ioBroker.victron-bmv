@@ -46,12 +46,26 @@ class VictronBmv extends utils.Adapter {
         this.bmv = new victronBmvCom_1.VictronBmvCom();
         this.lastFrameTime = 0;
         this.lastOpenAttempt = 0;
+        this.serialPortPath = "";
         this.frameQueue = Promise.resolve();
         this.unloaded = false;
         this.stateQueues = new Map();
         this.lastStateValues = new Map();
-        this.on("ready", this.onReady.bind(this));
+        this.on("ready", this.handleReady.bind(this));
         this.on("unload", this.onUnload.bind(this));
+    }
+    handleReady() {
+        if (this.readyPromise) {
+            return;
+        }
+        const operation = this.onReady().catch(async (error) => {
+            this.log.error(`Could not initialize VE.Direct adapter: ${this.errorText(error)}`);
+            await this.safeSetConnectionState(false);
+        });
+        this.readyPromise = operation;
+        void operation.catch(error => {
+            this.log.error(`VE.Direct ready handler failed: ${this.errorText(error)}`);
+        });
     }
     async onReady() {
         if (this.unloaded) {
@@ -65,7 +79,8 @@ class VictronBmv extends utils.Adapter {
         if (this.unloaded) {
             return;
         }
-        if (!this.config.serialPortPath || this.config.serialPortPath === "/dev/xxx") {
+        this.serialPortPath = (this.config.serialPortPath || "").trim();
+        if (!this.serialPortPath || this.serialPortPath === "/dev/xxx") {
             this.log.error("Configure a valid VE.Direct serial port before starting the adapter");
             return;
         }
@@ -86,19 +101,27 @@ class VictronBmv extends utils.Adapter {
         this.watchDogInterval = setInterval(() => void this.watchDog(), WATCHDOG_INTERVAL_MS);
     }
     async initObjects() {
+        const connectionCommon = {
+            name: "Fresh valid VE.Direct frame received",
+            type: "boolean",
+            role: "indicator.connected",
+            read: true,
+            write: false,
+            def: false,
+        };
         await this.setObjectNotExistsAsync("info.connection", {
             type: "state",
-            common: {
-                name: "Fresh valid VE.Direct frame received",
-                type: "boolean",
-                role: "indicator.connected",
-                read: true,
-                write: false,
-                def: false,
-            },
+            common: connectionCommon,
             native: {},
         });
+        if (this.unloaded)
+            return;
+        await this.extendObjectAsync("info.connection", { common: connectionCommon });
+        if (this.unloaded)
+            return;
         for (const field of Object.values(fields_1.VE_DIRECT_FIELDS)) {
+            if (this.unloaded)
+                return;
             const common = {
                 name: field.label,
                 type: field.type,
@@ -108,10 +131,17 @@ class VictronBmv extends utils.Adapter {
                 unit: field.unit,
             };
             await this.setObjectNotExistsAsync(field.id, { type: "state", common, native: {} });
+            if (this.unloaded)
+                return;
             await this.extendObjectAsync(field.id, { common });
+            if (this.unloaded)
+                return;
         }
     }
     watchDog() {
+        if (this.activeWatchDog) {
+            return this.activeWatchDog;
+        }
         const operation = this.performWatchDog();
         this.activeWatchDog = operation;
         const clear = () => {
@@ -122,16 +152,18 @@ class VictronBmv extends utils.Adapter {
         void operation.then(clear, clear);
         return operation;
     }
+    isFresh() {
+        return this.lastFrameTime > 0 && Date.now() - this.lastFrameTime < DATA_TIMEOUT_MS;
+    }
     async performWatchDog() {
-        if (this.unloaded) {
+        if (this.unloaded || !this.serialPortPath) {
             return;
         }
-        const fresh = this.lastFrameTime > 0 && Date.now() - this.lastFrameTime < DATA_TIMEOUT_MS;
-        if (fresh) {
+        if (this.isFresh()) {
             return;
         }
         await this.safeSetConnectionState(false);
-        if (this.unloaded) {
+        if (this.unloaded || this.isFresh()) {
             return;
         }
         const now = Date.now();
@@ -149,7 +181,7 @@ class VictronBmv extends utils.Adapter {
             if (this.unloaded) {
                 return;
             }
-            await this.bmv.open(this.config.serialPortPath);
+            await this.bmv.open(this.serialPortPath);
             // Opening a port is not a device connection. info.connection becomes
             // true only after the first checksum-valid frame.
         }
@@ -221,8 +253,8 @@ class VictronBmv extends utils.Adapter {
         }
     }
     onUnload(callback) {
-        if (this.unloaded) {
-            callback();
+        if (this.unloadPromise) {
+            void this.unloadPromise.then(callback, callback);
             return;
         }
         this.unloaded = true;
@@ -233,16 +265,24 @@ class VictronBmv extends utils.Adapter {
         this.bmv.onFrame = undefined;
         this.bmv.onValidFrame = undefined;
         const pendingWatchDog = this.activeWatchDog;
-        void this.bmv.close()
-            .catch(error => this.log.error(`Error closing VE.Direct port: ${this.errorText(error)}`))
-            .then(async () => {
-            const pending = [...this.stateQueues.values()];
-            if (pendingWatchDog) {
-                pending.push(pendingWatchDog);
-            }
-            await Promise.all(pending.map(promise => promise.catch(() => undefined)));
-        })
-            .then(callback, callback);
+        const pendingReady = this.readyPromise;
+        const operation = (async () => {
+            const pending = [
+                this.bmv.close().catch(error => this.log.error(`Error closing VE.Direct port: ${this.errorText(error)}`)),
+            ];
+            if (pendingWatchDog)
+                pending.push(pendingWatchDog.catch(() => undefined));
+            if (pendingReady)
+                pending.push(pendingReady.catch(() => undefined));
+            await Promise.all(pending);
+            await this.safeSetConnectionState(false);
+            await Promise.all([...this.stateQueues.values()].map(promise => promise.catch(() => undefined)));
+        })();
+        this.unloadPromise = operation;
+        void operation.then(callback, error => {
+            this.log.error(`Error during VE.Direct unload: ${this.errorText(error)}`);
+            callback();
+        });
     }
     errorText(error) {
         return error instanceof Error ? error.stack || error.message : String(error);

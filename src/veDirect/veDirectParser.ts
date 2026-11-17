@@ -3,11 +3,19 @@ import { decodeVeDirectField, VeDirectFrame } from "./fields";
 const COLON = 0x3a;
 const LF = 0x0a;
 const CR = 0x0d;
+const TAB = 0x09;
 const MAX_FRAME_BYTES = 8192;
 const MAX_LINE_BYTES = 128;
 const CHECKSUM_LABEL = Buffer.from("Checksum\t", "ascii");
 
-/** Byte-oriented VE.Direct TEXT parser with asynchronous HEX exclusion. */
+type ParserState = "idle" | "text" | "checksum" | "hex";
+type LineResult = "normal" | "empty" | "restart";
+
+/**
+ * Atomic VE.Direct TEXT parser following the official FAQ state priorities.
+ * A checksum byte is never interpreted as HEX. An asynchronous HEX message
+ * discards an interrupted TEXT block; the next complete block resynchronizes.
+ */
 export class VeDirectParser {
 	onFrame: ((frame: VeDirectFrame) => void) | undefined;
 	onValidFrame: (() => void) | undefined;
@@ -16,116 +24,161 @@ export class VeDirectParser {
 	unknownFields = 0;
 	invalidValues = 0;
 	hexMessages = 0;
-	private frame = Buffer.alloc(0);
+	private state: ParserState = "idle";
+	private checksum = 0;
+	private frameBytes = 0;
 	private line: number[] = [];
 	private records: VeDirectFrame = {};
-	private expectChecksum = false;
-	private hexCandidate = false;
-	private inHex = false;
-	private discarding = false;
-	private discardSawCR = false;
 	private malformed = false;
+	private overflow = false;
+	private idleSawCR = false;
+	private idleHadGarbage = false;
+	private candidateFromGarbage = false;
+	private previousTextByte: number | undefined;
 
 	receive(data: Buffer): void {
 		for (const byte of data) {
-			if (this.discarding) {
-				if (byte === CR) {
-					this.discardSawCR = true;
-					continue;
-				}
+			if (this.state === "hex") {
 				if (byte === LF) {
-					const restart = this.discardSawCR;
-					this.discarding = false;
-					this.discardSawCR = false;
-					if (restart) {
-						// The leading CRLF is part of the next frame checksum.
-						this.processTextByte(CR);
-						this.processTextByte(LF);
-					}
-					continue;
-				}
-				this.discardSawCR = false;
-				continue;
-			}
-			if (this.inHex) {
-				if (byte === LF) {
-					this.inHex = false;
 					this.hexMessages++;
+					this.state = "idle";
+					this.idleSawCR = false;
 				}
 				continue;
 			}
-			if (this.hexCandidate) {
-				this.hexCandidate = false;
-				if (byte === 0x41) { // asynchronous HEX messages start with :A
-					this.inHex = true;
+
+			// The official reference gives CHECKSUM precedence over colon/HEX.
+			if (byte === COLON && this.state !== "checksum") {
+				if (this.state === "text" && this.candidateFromGarbage && this.line.length === 0 && Object.keys(this.records).length === 0) {
+					// A checksum colon can be followed by the remainder of an ambiguous
+					// HEX message. Discard that orphan instead of swallowing the next block.
+					this.state = "idle";
+					this.candidateFromGarbage = false;
+					this.idleHadGarbage = false;
 					continue;
 				}
-				// A colon can itself be the binary checksum value. If no 'A'
-				// follows, process it normally before the current byte.
-				this.processTextByte(COLON);
-			}
-			if (byte === COLON) {
-				this.hexCandidate = true;
+				this.state = "hex";
+				this.line = [];
+				this.records = {};
+				this.checksum = 0;
+				this.frameBytes = 0;
+				this.malformed = false;
+				this.overflow = false;
+				this.idleSawCR = false;
+				this.idleHadGarbage = false;
+				this.candidateFromGarbage = false;
 				continue;
 			}
-			this.processTextByte(byte);
-		}
-		if (this.hexCandidate && this.expectChecksum && this.isValidChecksumByte(COLON)) {
-			this.hexCandidate = false;
-			this.processTextByte(COLON);
-		}
-	}
 
-	private isValidChecksumByte(byte: number): boolean {
-		let checksum = byte;
-		for (const frameByte of this.frame) {
-			checksum = (checksum + frameByte) & 0xff;
+			switch (this.state) {
+				case "idle":
+					this.receiveIdleByte(byte);
+					break;
+				case "text":
+					this.receiveTextByte(byte);
+					break;
+				case "checksum":
+					this.addToChecksum(byte);
+					this.completeFrame();
+					break;
+			}
 		}
-		return checksum === 0;
 	}
 
 	reset(): void {
-		this.frame = Buffer.alloc(0);
+		this.state = "idle";
+		this.checksum = 0;
+		this.frameBytes = 0;
 		this.line = [];
 		this.records = {};
-		this.expectChecksum = false;
-		this.hexCandidate = false;
-		this.inHex = false;
-		this.discarding = false;
-		this.discardSawCR = false;
 		this.malformed = false;
+		this.overflow = false;
+		this.idleSawCR = false;
+		this.idleHadGarbage = false;
+		this.candidateFromGarbage = false;
+		this.previousTextByte = undefined;
 	}
 
-	private processTextByte(byte: number): void {
-		if (this.expectChecksum) {
-			this.frame = Buffer.concat([this.frame, Buffer.from([byte])]);
-			this.completeFrame();
+	private receiveIdleByte(byte: number): void {
+		if (byte === CR) {
+			this.idleSawCR = true;
 			return;
 		}
-		this.appendTextByte(byte);
+		if (byte === LF) {
+			const fromGarbage = this.idleHadGarbage;
+			this.startFrame(this.idleSawCR);
+			this.candidateFromGarbage = fromGarbage;
+			this.idleHadGarbage = false;
+			return;
+		}
+		this.idleSawCR = false;
+		this.idleHadGarbage = true;
 	}
 
-	private appendTextByte(byte: number): void {
-		if (this.frame.length >= MAX_FRAME_BYTES || this.line.length >= MAX_LINE_BYTES) {
-			this.invalidFrames++;
-			this.reset();
-			this.discarding = true;
-			return;
+	private startFrame(withCR: boolean): void {
+		this.state = "text";
+		this.checksum = withCR ? (CR + LF) & 0xff : LF;
+		this.frameBytes = withCR ? 2 : 1;
+		this.line = [];
+		this.records = {};
+		this.malformed = false;
+		this.overflow = false;
+		this.idleSawCR = false;
+		this.idleHadGarbage = false;
+		this.candidateFromGarbage = false;
+		this.previousTextByte = undefined;
+	}
+
+	private receiveTextByte(byte: number): void {
+		const endedWithCR = this.previousTextByte === CR;
+		this.addToChecksum(byte);
+		if (this.frameBytes > MAX_FRAME_BYTES) {
+			this.markOverflow();
 		}
-		this.frame = Buffer.concat([this.frame, Buffer.from([byte])]);
-		this.line.push(byte);
+		if (!this.overflow && this.line.length < MAX_LINE_BYTES) {
+			this.line.push(byte);
+		} else {
+			this.markOverflow();
+		}
 
 		if (byte === LF) {
-			this.finishLine();
+			const result = this.finishLine();
 			this.line = [];
+			if (result === "restart") {
+				if (!this.overflow) {
+					this.invalidFrames++;
+				}
+				this.startFrame(endedWithCR);
+			} else if (result === "empty") {
+				this.startFrame(endedWithCR);
+			} else {
+				this.previousTextByte = byte;
+			}
 			return;
 		}
+
+		this.previousTextByte = byte;
 		if (Buffer.from(this.line).equals(CHECKSUM_LABEL)) {
-			this.expectChecksum = true;
+			this.state = "checksum";
 		}
 	}
 
-	private finishLine(): void {
+	private addToChecksum(byte: number): void {
+		this.checksum = (this.checksum + byte) & 0xff;
+		this.frameBytes++;
+	}
+
+	private markOverflow(): void {
+		if (!this.overflow) {
+			this.invalidFrames++;
+		}
+		this.overflow = true;
+	}
+
+	private finishLine(): LineResult {
+		if (this.overflow) {
+			return "restart";
+		}
 		let line = this.line;
 		if (line[line.length - 1] === LF) {
 			line = line.slice(0, -1);
@@ -134,12 +187,11 @@ export class VeDirectParser {
 			line = line.slice(0, -1);
 		}
 		if (line.length === 0) {
-			return;
+			return "empty";
 		}
-		const tab = line.indexOf(0x09);
+		const tab = line.indexOf(TAB);
 		if (tab <= 0) {
-			this.malformed = true;
-			return;
+			return "restart";
 		}
 		const label = Buffer.from(line.slice(0, tab)).toString("ascii");
 		const value = Buffer.from(line.slice(tab + 1)).toString("ascii");
@@ -147,32 +199,32 @@ export class VeDirectParser {
 			const decoded = decodeVeDirectField(label, value);
 			if (decoded === null) {
 				this.unknownFields++;
-				return;
+			} else {
+				Object.assign(this.records, decoded);
 			}
-			Object.assign(this.records, decoded);
 		} catch {
 			this.invalidValues++;
 			this.malformed = true;
 		}
+		return "normal";
 	}
 
 	private completeFrame(): void {
-		let checksum = 0;
-		for (const byte of this.frame) {
-			checksum = (checksum + byte) & 0xff;
-		}
-		if (checksum !== 0) {
-			this.checksumErrors++;
-		} else if (this.malformed) {
-			this.invalidFrames++;
-		} else {
-			if (this.onValidFrame) {
-				this.onValidFrame();
+		try {
+			if (this.checksum !== 0) {
+				this.checksumErrors++;
+			} else if (this.malformed || this.overflow) {
+				this.invalidFrames++;
+			} else {
+				if (this.onValidFrame) {
+					this.onValidFrame();
+				}
+				if (Object.keys(this.records).length > 0 && this.onFrame) {
+					this.onFrame({ ...this.records });
+				}
 			}
-			if (Object.keys(this.records).length > 0 && this.onFrame) {
-				this.onFrame({ ...this.records });
-			}
+		} finally {
+			this.reset();
 		}
-		this.reset();
 	}
 }

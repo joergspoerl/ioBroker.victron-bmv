@@ -123,12 +123,14 @@ const fields: VeDirectField[] = [
 	define("H18", "number", "value.energy", "kWh", "Cumulative charged energy", numeric(0.01), "Transmitted in 0.01 kWh"),
 ];
 
-export const VE_DIRECT_FIELDS: Record<string, VeDirectField> = {};
+export const VE_DIRECT_FIELDS: Record<string, VeDirectField> = Object.create(null) as Record<string, VeDirectField>;
 for (const field of fields) {
 	VE_DIRECT_FIELDS[field.id] = field;
 }
 
 export function decodeVeDirectField(label: string, value: string): VeDirectFrame | null {
-	const field = VE_DIRECT_FIELDS[label];
-	return field ? field.decode(value) : null;
+	if (!Object.prototype.hasOwnProperty.call(VE_DIRECT_FIELDS, label)) {
+		return null;
+	}
+	return VE_DIRECT_FIELDS[label].decode(value);
 }
