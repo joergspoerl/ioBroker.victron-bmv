@@ -112,6 +112,17 @@ VE.Direct darf Laufzeit- und Historiewerte in unterschiedlichen Blöcken senden.
 
 Asynchrone HEX-Nachrichten können TEXT-Blöcke unterbrechen. Entsprechend der offiziellen FAQ-Referenz hat im `CHECKSUM`-Zustand das binäre Checksumbyte Vorrang vor einem Doppelpunkt. Ein HEX-unterbrochener TEXT-Block wird nicht publiziert; der Parser resynchronisiert am nächsten vollständigen Block. HEX-Lese-/Schreibkommandos sind außerhalb des Adapterumfangs.
 
+## Schreibzugriffe und Gerätegrenzen
+
+Der Adapter ist read-only. VE.Direct-HEX unterstützt bei neueren Geräten grundsätzlich `Get`/`Set`, aber nicht jedes BMV-Modell:
+
+- **BMV-600S/602S/600HS:** Nur eingeschränkter Text-Modus; Einstellungen und Synchronisieren sind über diese Schnittstelle laut Victron nicht möglich.
+- **BMV-700/702/712 und SmartShunt:** Schreibzugriffe sind für bestimmte Register grundsätzlich dokumentiert, aber in diesem Adapter nicht implementiert.
+- **BMV-602S manuell synchronisieren:** `+` und `–` im Normalbetrieb drei Sekunden gleichzeitig halten oder `SYNC` im Setup-Menü verwenden.
+- Das NMEA-2000-Zubehör ändert Übertragungs-/Netzwerkparameter, nicht die eigentlichen BMV-Einstellungen.
+
+Die vollständige Abgrenzung, Anforderungen an möglichen zukünftigen Schreibsupport und sämtliche Primärquellen stehen in [docs/vedirect-write-capabilities.md](docs/vedirect-write-capabilities.md).
+
 ## Migration von 0.0.3
 
 - Bestehende State-Objekte und deren Namen, Rollen und Einheiten werden beim Start automatisch aktualisiert.
