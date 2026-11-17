@@ -2,146 +2,150 @@
 
 # ioBroker.victron-bmv
 
-[![NPM version](https://img.shields.io/npm/v/iobroker.victron-bmv.svg)](https://www.npmjs.com/package/iobroker.victron-bmv)
-[![Downloads](https://img.shields.io/npm/dm/iobroker.victron-bmv.svg)](https://www.npmjs.com/package/iobroker.victron-bmv)
-![Number of Installations](https://iobroker.live/badges/victron-bmv-installed.svg)
-![Current version in stable repository](https://iobroker.live/badges/victron-bmv-stable.svg)
-[![Dependency Status](https://img.shields.io/david/joerg/iobroker.victron-bmv.svg)](https://david-dm.org/joerg/iobroker.victron-bmv)
+[![Test and Release](https://github.com/joergoss/ioBroker.victron-bmv/actions/workflows/test-and-release.yml/badge.svg)](https://github.com/joergoss/ioBroker.victron-bmv/actions/workflows/test-and-release.yml)
 
-[![NPM](https://nodei.co/npm/iobroker.victron-bmv.png?downloads=true)](https://nodei.co/npm/iobroker.victron-bmv/)
+Read-only ioBroker-Adapter für Victron-BMV-Batteriemonitore und kompatible VE.Direct-Geräte über das serielle **TEXT-Protokoll**.
 
-**Tests:** ![Test and Release](https://github.com/joerg/ioBroker.victron-bmv/workflows/Test%20and%20Release/badge.svg)
+## Funktionen
 
-## victron-bmv adapter for ioBroker
+- Byteorientierter VE.Direct-Parser mit Modulo-256-Checksumme.
+- Sofortiger Frameabschluss direkt nach dem Checksum-Byte, auch ohne zusätzliches CRLF.
+- Sichere Behandlung beliebiger Chunk-Grenzen, mehrerer Blöcke und unbekannter Felder.
+- Asynchrone HEX-Nachrichten (`:A…LF`) werden erkannt; einen unterbrochenen TEXT-Block verwirft der Parser kontrolliert und resynchronisiert am nächsten Block.
+- Atomare Frames: Nur checksumgültige und tatsächlich enthaltene Felder werden publiziert.
+- `info.connection` folgt frischen gültigen Daten, nicht nur einem offenen Serial-Port.
+- Keine HEX-Schreibbefehle und keine Gerätekonfiguration über diesen Adapter.
 
-iobroker test adapter
+## Unterstützte Geräte
 
-## Developer manual
+Die Feldverfügbarkeit hängt von Modell und Konfiguration ab. Die Felddefinitionen folgen **VE.Direct Protocol 3.34**, insbesondere BMV 60x/70x/71x und SmartShunt.
 
-This section is intended for the developer. It can be deleted later
+- BMV-60xS besitzen nur eine eingeschränkte TEXT-Schnittstelle.
+- Auxiliary-/Midpoint-/Temperaturfelder hängen von der AUX-Konfiguration ab.
+- Nicht synchronisierte oder DC-Monitor-Betriebsarten können statt Zahlen `---` senden.
+- MPPT-/Phoenix-/Orion-spezifische Felder sind nicht Ziel dieses BMV-Adapters.
 
-### Getting started
+Offizielle Referenzen:
 
-You are almost done, only a few steps left:
+- [VE.Direct Protocol 3.34](https://www.victronenergy.com/upload/documents/VE.Direct-Protocol-3.34.pdf)
+- [VE.Direct Protocol FAQ](https://www.victronenergy.com/live/vedirect_protocol:faq)
 
-1. Create a new repository on GitHub with the name `ioBroker.victron-bmv`
-1. Initialize the current folder as a new git repository:
-    ```bash
-    git init -b main
-    git add .
-    git commit -m "Initial commit"
-    ```
-1. Link your local repository with the one on GitHub:
+## Installation und serielle Konfiguration
 
-    ```bash
-    git remote add origin https://github.com/joerg/ioBroker.victron-bmv
-    ```
+1. BMV über eine geeignete VE.Direct-/USB- oder VE.Direct-/RS232-Schnittstelle mit dem ioBroker-Host verbinden. Victron empfiehlt Schnittstellen mit galvanischer Isolation.
+2. Den Pfad im Admin eintragen, beispielsweise `/dev/ttyUSB0` oder einen stabilen Pfad unter `/dev/serial/by-id/`.
+3. Sicherstellen, dass der ioBroker-Prozess auf den Port zugreifen darf.
+4. Der Adapter verwendet die protokollkonforme Konfiguration **19200 Baud, 8 Datenbits, keine Parität, 1 Stoppbit** und schreibt keine HEX-Befehle.
+5. Vor dem Start darf kein zweiter Prozess denselben Serial-Port verwenden.
 
-1. Push all files to the GitHub repo:
+## Verbindungs- und Fehlerverhalten
 
-    ```bash
-    git push origin main
-    ```
+- `info.connection=true`: Innerhalb der letzten fünf Sekunden wurde mindestens ein checksumgültiger Block verarbeitet.
+- `info.connection=false`: Kein frischer gültiger Block, Serial-Fehler oder Adapter noch nicht verbunden.
+- Ein offener, aber stummer Port wird nicht mehr als verbunden angezeigt, sondern kontrolliert geschlossen und erneut geöffnet.
+- Open/Set besitzen ein 10-Sekunden-Timeout, Close ein 5-Sekunden-Timeout; späte Callbacks einer alten Session werden nicht als aktuelle Daten übernommen.
+- Beim kontrollierten Adapterstopp wird `info.connection=false` quittiert, bevor der Unload abschließt.
+- Ungültige Checksummen, beschädigte Frames und nicht dekodierbare Feldwerte verwerfen den betroffenen Block; unbekannte Felder werden ignoriert. In keinem Fall entstehen erfundene Messwerte.
+- States werden nur bei Änderungen geschrieben und erhalten `ack=true`, wenn sie aus einem gültigen Geräteblock stammen.
 
-1. Head over to [src/main.ts](src/main.ts) and start programming!
+## Sonderwerte
 
-### Best Practices
+| Geräteangabe | ioBroker-Verhalten |
+|---|---|
+| `---` in numerischen Feldern | `null`; kein `NaN` und kein Pseudo-Nullwert |
+| `TTG=-1` | `TTG=null`, `TTGInfinite=true` |
+| Normales `TTG` in Minuten | Stunden; `TTGInfinite=false` |
+| Fehlendes/optionales Feld | Es wird kein State-Wert erzeugt oder mit 0 simuliert |
+| `On`/`OFF` in unterschiedlicher Schreibweise | Case-insensitive Boolean-Auswertung |
 
-We've collected some [best practices](https://github.com/ioBroker/ioBroker.repositories#development-and-coding-best-practices) regarding ioBroker development and coding in general. If you're new to ioBroker or Node.js, you should
-check them out. If you're already experienced, you should also take a look at them - you might learn something new :)
+## Laufzeitfelder
 
-### Scripts in `package.json`
+| State | Einheit | Bedeutung / Rohskalierung |
+|---|---:|---|
+| `V` | V | Hauptbatteriespannung, mV / 1000 |
+| `VS` | V | Auxiliary-/Starterspannung, mV / 1000 |
+| `I` | A | Vorzeichenbehafteter Batteriestrom, mA / 1000 |
+| `P` | W | Momentanleistung, unverändert |
+| `CE` | Ah | Verbrauchte Ladung, mAh / 1000 |
+| `SOC` | % | State of Charge, Promille / 10 |
+| `TTG` | h | Minuten / 60; Sonderwerte siehe oben |
+| `TTGInfinite` | – | Synthetischer Status aus `TTG=-1` |
+| `Alarm` | – | Alarmzustand |
+| `Relay` | – | Relaiszustand |
+| `AR` | – | Alarm-Reason-Rohbitfeld |
+| `BMV` | – | Modelltext, laut Protokoll deprecated |
+| `FW` | – | 16-Bit-Firmwareversion als String |
+| `FWE` | – | 24-Bit-Firmwareversion als String |
+| `PID` | – | Produkt-ID als String, z. B. `0x203` |
+| `SER#` | – | Seriennummer |
+| `MON` | – | DC-Monitor-Rohwert |
+| `VM` | V | Midpoint-Spannung, mV / 1000 |
+| `DM` | % | Midpoint-Abweichung, Promille / 10 |
+| `T` | °C | Batterietemperatur oder `null` |
 
-Several npm scripts are predefined for your convenience. You can run them using `npm run <scriptname>`
-| Script name | Description |
-|-------------|-------------|
-| `build:ts` | Compile the TypeScript sources. |
-| `watch:ts` | Compile the TypeScript sources and watch for changes. |
-| `watch` | Shortcut for `npm run watch:ts` |
-| `test:ts` | Executes the tests you defined in `*.test.ts` files. |
-| `test:package` | Ensures your `package.json` and `io-package.json` are valid. |
-| `test:unit` | Tests the adapter startup with unit tests (fast, but might require module mocks to work). |
-| `test:integration` | Tests the adapter startup with an actual instance of ioBroker. |
-| `test` | Performs a minimal test run on package files and your tests. |
-| `check` | Performs a type-check on your code (without compiling anything). |
-| `lint` | Runs `ESLint` to check your code for formatting errors and potential bugs. |
-| `release` | Creates a new release, see [`@alcalzone/release-script`](https://github.com/AlCalzone/release-script#usage) for more details. |
+## Historiefelder
 
-### Writing tests
+| State | Einheit | Bedeutung / Rohskalierung |
+|---|---:|---|
+| `H1` | Ah | Tiefste Entladung, mAh / 1000 |
+| `H2` | Ah | Letzte Entladung, mAh / 1000 |
+| `H3` | Ah | Durchschnittliche Entladung, mAh / 1000 |
+| `H4` | – | Ladezyklen, unveränderte Ganzzahl |
+| `H5` | – | Vollentladungen, unveränderte Ganzzahl |
+| `H6` | Ah | Kumulierte entnommene Ladung, mAh / 1000 |
+| `H7` | V | Minimale Hauptspannung, mV / 1000 |
+| `H8` | V | Maximale Hauptspannung, mV / 1000 |
+| `H9` | d | Sekunden seit letzter Volladung / 86400 |
+| `H10` | – | Automatische Synchronisationen |
+| `H11` | – | Low-Main-Voltage-Alarme |
+| `H12` | – | High-Main-Voltage-Alarme |
+| `H13` | – | Low-Aux-Voltage-Alarme |
+| `H14` | – | High-Aux-Voltage-Alarme |
+| `H15` | V | Minimale Auxiliary-Spannung, mV / 1000 |
+| `H16` | V | Maximale Auxiliary-Spannung, mV / 1000 |
+| `H17` | kWh | Entladene/produzierte Energie, Rohwert × 0.01 |
+| `H18` | kWh | Geladene/verbrauchte Energie, Rohwert × 0.01 |
 
-When done right, testing code is invaluable, because it gives you the
-confidence to change your code while knowing exactly if and when
-something breaks. A good read on the topic of test-driven development
-is https://hackernoon.com/introduction-to-test-driven-development-tdd-61a13bc92d92.
-Although writing tests before the code might seem strange at first, but it has very
-clear upsides.
+## Mehrere Protokollblöcke
 
-The template provides you with basic tests for the adapter startup and package files.
-It is recommended that you add your own tests into the mix.
+VE.Direct darf Laufzeit- und Historiewerte in unterschiedlichen Blöcken senden. Jeder Block besitzt eine eigene Checksumme. Der Adapter publiziert nur die tatsächlich enthaltenen Felder und verändert keine anderen States. Dadurch bleibt der letzte gültige Wert anderer Blöcke erhalten, ohne fehlende Felder als `0` vorzutäuschen.
 
-### Publishing the adapter
+Asynchrone HEX-Nachrichten können TEXT-Blöcke unterbrechen. Entsprechend der offiziellen FAQ-Referenz hat im `CHECKSUM`-Zustand das binäre Checksumbyte Vorrang vor einem Doppelpunkt. Ein HEX-unterbrochener TEXT-Block wird nicht publiziert; der Parser resynchronisiert am nächsten vollständigen Block. HEX-Lese-/Schreibkommandos sind außerhalb des Adapterumfangs.
 
-Using GitHub Actions, you can enable automatic releases on npm whenever you push a new git tag that matches the form
-`v<major>.<minor>.<patch>`. We **strongly recommend** that you do. The necessary steps are described in `.github/workflows/test-and-release.yml`.
+## Migration von 0.0.3
 
-Since you installed the release script, you can create a new
-release simply by calling:
+- Bestehende State-Objekte und deren Namen, Rollen und Einheiten werden beim Start automatisch aktualisiert.
+- `H4`/`H5` werden als ganzzahlige Zähler und `H6` mit korrekter mAh→Ah-Skalierung aktualisiert.
+- `TTG=-1` ersetzt den früheren negativen Stundenwert durch `TTG=null` und `TTGInfinite=true`.
+- `H9` bleibt bewusst in Tagen (`unit=d`); die frühere beschreibende `unit` wird korrigiert.
+- Bereits in History-Datenbanken gespeicherte Altwerte werden nicht rückwirkend verändert. Neue gültige Geräteblöcke aktualisieren die aktuellen States automatisch.
+
+## Entwicklung und Tests
+
+Der vollständige Audit ist in [docs/audit-2026-11-17.md](docs/audit-2026-11-17.md) dokumentiert.
 
 ```bash
-npm run release
+npm ci
+npm run test:all
 ```
 
-Additional command line options for the release script are explained in the
-[release-script documentation](https://github.com/AlCalzone/release-script#command-line).
-
-To get your adapter released in ioBroker, please refer to the documentation
-of [ioBroker.repositories](https://github.com/ioBroker/ioBroker.repositories#requirements-for-adapter-to-get-added-to-the-latest-repository).
-
-### Test the adapter manually with dev-server
-
-Since you set up `dev-server`, you can use it to run, test and debug your adapter.
-
-You may start `dev-server` by calling from your dev directory:
-
-```bash
-dev-server watch
-```
-
-The ioBroker.admin interface will then be available at http://localhost:8081/
-
-Please refer to the [`dev-server` documentation](https://github.com/ioBroker/dev-server#command-line) for more details.
+`test:all` umfasst TypeScript-/Protokoll-/Lifecycle-Tests, Package-Checks, Typecheck, ESLint, Build und js-controller-Integration. Die CI-Matrix deckt Node.js 18, 20, 22, 24 und 26 auf Linux, Windows und macOS ab. Die Tests verwenden offizielle Rohframes, alle Chunk-Grenzen, alle 256 binären Checksum-Werte, Multiblock-Streams, asynchrone HEX-Nachrichten, reale BMV-602S-Produktionsvektoren und SerialPort-Mocks. Reale Hardware oder serielle Native-Treiber sind für die Unit-Tests nicht erforderlich. Die Entwicklungswerkzeuge (ESLint 10) benötigen Node.js ≥ 20.19; die Produktionsunterstützung ab Node.js 18 bleibt davon unberührt.
 
 ## Changelog
 
-### 0.0.3 (2022-01-11)
+### **WORK IN PROGRESS**
+- (joerg) VE.Direct-Feldskalierung, Metadaten und Sonderwerte korrigiert (#2).
+- (joerg) Serial-Watchdog, State-Serialisierung und Unload sicher überarbeitet (#3, #9).
+- (joerg) Byteorientierter Parser mit Multiblock-/HEX-/Recovery-Tests neu aufgebaut (#4, #10).
+- (joerg) SerialPort 12 mit ARMv7-Prebuilds und Node.js-18-kompatibler Testsuite eingeführt (#6, #8).
+- (joerg) Admin, Paket, CI und Dokumentation modernisiert; vollständiger pi3-Audit integriert (#1, #7).
 
--   remove unused config.options
--   fix wrong value mapping I (battery current)
+### 0.0.3 (2022-01-11)
+- (joerg) Nicht verwendete Konfigurationsoptionen entfernt und Batteriestromzuordnung korrigiert.
 
 ### 0.0.2 (2022-01-11)
-
--   (joerg) initial release
+- (joerg) Initial release.
 
 ## License
 
-MIT License
-
-Copyright (c) 2022 joergoss <joerg.oss@gmx.de>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+MIT License — siehe [LICENSE](LICENSE).

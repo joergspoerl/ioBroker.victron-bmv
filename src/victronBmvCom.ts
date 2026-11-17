@@ -1,253 +1,426 @@
-/* eslint-disable prettier/prettier */
+import { VeDirectFrame } from "./veDirect/fields";
+import { VeDirectParser } from "./veDirect/veDirectParser";
 
-import SerialPort = require("serialport")
+export interface SerialPortLike {
+	isOpen: boolean;
+	on(event: "data", listener: (data: Buffer) => void): this;
+	on(event: "error", listener: (error: Error) => void): this;
+	on(event: "close", listener: () => void): this;
+	removeListener(event: "data", listener: (data: Buffer) => void): this;
+	removeListener(event: "error", listener: (error: Error) => void): this;
+	removeListener(event: "close", listener: () => void): this;
+	set(options: Record<string, boolean>, callback: (error?: Error | null) => void): void;
+	close(callback: (error?: Error | null) => void): void;
+}
+
+export type SerialPortFactory = (path: string, options: { baudRate: number }, callback: (error?: Error | null) => void) => SerialPortLike;
+
+export const SERIAL_OPEN_TIMEOUT_MS = 10000;
+export const SERIAL_CLOSE_TIMEOUT_MS = 5000;
+
+interface Deferred<T> {
+	promise: Promise<T>;
+	resolve: (value: T | PromiseLike<T>) => void;
+	reject: (error: Error) => void;
+}
+
+interface PortState {
+	closed: boolean;
+	ready: boolean;
+	failed: boolean;
+	closePending: boolean;
+	rejectPending: ((error: Error) => void) | undefined;
+	closeListener: () => void;
+	dataListener: (data: Buffer) => void;
+}
+
+class SerialOperationTimeoutError extends Error {
+	constructor(operation: string, timeoutMs: number) {
+		super(`Serial ${operation} timed out after ${timeoutMs} ms`);
+		this.name = "SerialOperationTimeoutError";
+	}
+}
+
+const defaultPortFactory: SerialPortFactory = (path, options, callback) => {
+	// Load native bindings only for a real open, not for parser/unit tests.
+	// eslint-disable-next-line @typescript-eslint/no-require-imports
+	const { SerialPort } = require("serialport") as typeof import("serialport");
+	return new SerialPort({ path, baudRate: options.baudRate }, callback) as unknown as SerialPortLike;
+};
+
+function deferred<T>(): Deferred<T> {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (error: Error) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
 
 export class VictronBmvCom {
+	onFrame: ((frame: VeDirectFrame) => void) | undefined;
+	onValidFrame: (() => void) | undefined;
+	onError: ((error: Error) => void) | undefined;
+	readonly parser = new VeDirectParser();
+	private port: SerialPortLike | undefined;
+	private openPromise: Promise<void> | undefined;
+	private closePromise: Promise<void> | undefined;
+	private closeRequestId = 0;
+	private openCloseRequestId = 0;
+	private readonly portStates = new WeakMap<SerialPortLike, PortState>();
+	private readonly closeWaiters = new WeakMap<SerialPortLike, Set<() => void>>();
+	private readonly openTimeoutMs: number;
+	private readonly closeTimeoutMs: number;
+	private readonly lateCloseRetryMs: number;
 
-    public constructor() {
-        // this.port = new SerialPort(serialportPath)
-        // this.open(serialportPath)
-    }
+	constructor(
+		private readonly portFactory: SerialPortFactory = defaultPortFactory,
+		options: { openTimeoutMs?: number; closeTimeoutMs?: number; lateCloseRetryMs?: number } = {},
+	) {
+		this.openTimeoutMs = options.openTimeoutMs ?? SERIAL_OPEN_TIMEOUT_MS;
+		this.closeTimeoutMs = options.closeTimeoutMs ?? SERIAL_CLOSE_TIMEOUT_MS;
+		this.lateCloseRetryMs = options.lateCloseRetryMs ?? 1000;
+		this.parser.onFrame = frame => {
+			if (this.onFrame) {
+				this.onFrame({ ...frame });
+			}
+		};
+		this.parser.onValidFrame = () => {
+			if (this.onValidFrame) {
+				this.onValidFrame();
+			}
+		};
+	}
 
-    frame = new Buffer(0); // in buffer
-    self = this; // reference to itself
+	isOpen(): boolean {
+		return this.port?.isOpen === true;
+	}
 
-    port: SerialPort | undefined;
+	open(serialportPath: string): Promise<void> {
+		const closeRequest = this.closeRequestId;
+		if (this.openPromise && this.openCloseRequestId === closeRequest) {
+			return this.openPromise;
+		}
+		const operation = this.performOpen(serialportPath, closeRequest);
+		this.openCloseRequestId = closeRequest;
+		this.openPromise = operation;
+		const clear = (): void => {
+			if (this.openPromise === operation) {
+				this.openPromise = undefined;
+			}
+		};
+		void operation.then(clear, clear);
+		return operation;
+	}
 
-    public cb: CallbackFunction = () => { return };
+	private async performOpen(serialportPath: string, closeRequest: number): Promise<void> {
+		if (this.closePromise) {
+			await this.closePromise.catch(() => undefined);
+		}
+		this.assertNotCloseRequested(closeRequest);
 
-    // data structure
-    data: Bmv_data = {
-        "V": 0,
-        "VS": 0,
-        "I": 0,
-        "CE": 0,
-        "SOC": 0,
-        "TTG": 0,
-        "Alarm": false,
-        "Relay": false,
-        "AR": 0,
-        "BMV": "",
-        "FW": "",
-        "H1": 0,
-        "H2": 0,
-        "H3": 0,
-        "H4": 0,
-        "H5": 0,
-        "H6": 0,
-        "H7": 0,
-        "H8": 0,
-        "H9": 0,
-        "H10": 0,
-        "H11": 0,
-        "H12": 0,
-        "H13": 0,
-        "H14": 0,
-        "H15": 0,
-        "H16": 0,
-    };
-    meta: Bmv_meta = {
-        "V": { type: "number", role: "value.voltage", scale: function (v: number) { return v / 1000 }, unit: "V", label: "Battery voltage", descr: " this readout is useful to make a rough estimation of the battery’s state- of - charge.A 12 V battery is considered empty when it cannot maintain a voltage of 10.5 V under load conditions.Excessive voltage drops for a charged battery when under heavy load can also indicate that battery capacity is insufficient. " },
-        "VS": { type: "number", role: "value.voltage", scale: function (v: number) { return v / 1000 }, unit: "V", label: "Starter battery voltage", descr: "this readout is useful to make a rough estimation of the starter battery’s state- of - charge." },
-        "I": { type: "number", role: "value.current", scale: function (v: number) { return v / 1000 }, unit: "A", label: "Current", descr: " this represents the actual current flowing in to or out of the battery. A discharge current is indicated as a negative value (current flowing out of the battery).If for example a DC to AC inverter draws 5 A from the battery, it will be displayed as –5.0 A." },
-        "CE": { type: "number", role: "value.power.consumption", scale: function (v: number) { return v / 1000 }, unit: "Ah", label: "Consumend Energy", descr: " this displays the amount of Ah consumed from the battery.A fully charged battery sets this readout to 0.0 Ah  (synchronised system). If a current of 12 A is drawn from the battery for a period of 3hours, this readout will show –36.0 Ah. " },
-        "SOC": { type: "number", role: "value.battery", scale: function (v: number) { return v / 10 }, unit: "%", label: "State-of-charge", descr: " this is the best way to monitor the actual state of the battery. This readout represents the current amount of energy left in the battery. A fully charged battery will be indicated by a value of 100.0%. A fully discharged battery will be indicated by a value of 0.0%" },
-        "TTG": { type: "number", role: "state", scale: function (v: number) { return v / 60 }, unit: "h", label: "Time-to-go", descr: " this is an estimation of how long the battery can support the present load until it needs recharging. " },
-        "Alarm": { type: "boolean", role: "state", scale: function (v: string) { return v == "ON" ? true : false }, unit: "", label: "Alarm", descr: "" },
-        "Relay": { type: "boolean", role: "state", scale: function (v: string) { return v == "ON" ? true : false }, unit: "", label: "Relay", descr: "" },
-        "AR": { type: "number", role: "state", scale: function (v: string) { return parseFloat(v) }, unit: "", label: "AR", descr: "" },
-        "BMV": { type: "string", role: "state", scale: function (v: number) { return v }, unit: "", label: "Device", descr: "" },
-        "FW": { type: "string", role: "state", scale: function (v: number) { return v }, unit: "", label: "Version", descr: "Firmware version" },
-        "H1": { type: "number", role: "state", scale: function (v: number) { return v / 1000 }, unit: "Ah", label: "deepest discharge", descr: "The depth of the deepest discharge. This is the largest value recorded for Ah consumed . " },
-        "H2": { type: "number", role: "state", scale: function (v: number) { return v / 1000 }, unit: "Ah", label: "last discharge", descr: "The depth of the last discharge. This is the largest value recorded for Ah consumed since the last synchronisation. " },
-        "H3": { type: "number", role: "state", scale: function (v: number) { return v / 1000 }, unit: "Ah", label: "average discharge", descr: "The depth of the average discharge. " },
-        "H4": { type: "number", role: "state", scale: function (v: number) { return v / 100 }, unit: "", label: "number of cycles", descr: "The number of charge cycles. A charge cycle is counted every time the sate of charge drops below 65 %, then rises above 90 % " },
-        "H5": { type: "number", role: "state", scale: function (v: number) { return v / 100 }, unit: "", label: "number of full discharges", descr: "The number of full discharges. A full discharge is counted when the state of charge reaches 0 %. " },
-        "H6": { type: "number", role: "state", scale: function (v: string) { return parseFloat(v) }, unit: "Ah", label: "The cumulative number of Amp hours drawn from the battery", descr: "" },
-        "H7": { type: "number", role: "state", scale: function (v: number) { return v / 1000 }, unit: "V", label: "The minimum battery voltage.", descr: "" },
-        "H8": { type: "number", role: "state", scale: function (v: number) { return v / 1000 }, unit: "V", label: "The maximum battery voltage. ", descr: "" },
-        "H9": { type: "number", role: "state", scale: function (v: number) { return v / 60 / 60 / 24 }, unit: "The number of days since the last full charge. ", label: "", descr: "" },
-        "H10": { type: "number", role: "state", scale: function (v: string) { return parseFloat(v) }, unit: "", label: "The number of times the BMV has automatically synchronised. ", descr: "" },
-        "H11": { type: "number", role: "state", scale: function (v: string) { return parseFloat(v) }, unit: "", label: "The number of low voltage alarms. ", descr: "" },
-        "H12": { type: "number", role: "state", scale: function (v: string) { return parseFloat(v) }, unit: "", label: "The number of high voltage alarms. ", descr: "" },
-        "H13": { type: "number", role: "state", scale: function (v: string) { return parseFloat(v) }, unit: "", label: "The number of low starter battery voltage alarms.", descr: "" },
-        "H14": { type: "number", role: "state", scale: function (v: string) { return parseFloat(v) }, unit: "", label: "The number of high starter battery voltage alarms.", descr: "" },
-        "H15": { type: "number", role: "state", scale: function (v: number) { return v / 1000 }, unit: "V", label: "The minimum starter battery voltage", descr: "" },
-        "H16": { type: "number", role: "state", scale: function (v: number) { return v / 1000 }, unit: "V", label: "The maximum starter battery voltage. ", descr: "" }
-    };
+		const existing = this.port;
+		if (existing) {
+			const state = this.portStates.get(existing);
+			if (existing.isOpen && state?.ready && !state.closed) {
+				return;
+			}
+			if (existing.isOpen || state?.closePending) {
+				await this.closePort(existing);
+			} else if (state?.failed && !state.closed) {
+				// Keep its late-open callback/listeners alive, but do not let it
+				// become the current session after a replacement opens.
+				this.port = undefined;
+			} else {
+				this.cleanupPort(existing);
+			}
+		}
+		this.assertNotCloseRequested(closeRequest);
+		this.parser.reset();
 
+		const openResult = deferred<void>();
+		let port: SerialPortLike;
+		const state: PortState = {
+			closed: false,
+			ready: false,
+			failed: false,
+			closePending: false,
+			rejectPending: openResult.reject,
+			closeListener: () => undefined,
+			dataListener: () => undefined,
+		};
+		const openCallback = (error?: Error | null): void => {
+			// A factory may legally call back synchronously. Deferring guarantees
+			// that the returned port and all listeners have been installed first.
+			queueMicrotask(() => {
+				if (state.failed) {
+					if (error || !port?.isOpen) {
+						state.closed = true;
+						this.cleanupPort(port);
+					} else {
+						void this.closeLatePort(port);
+					}
+					return;
+				}
+				if (error) {
+					openResult.reject(error);
+				} else {
+					openResult.resolve();
+				}
+			});
+		};
 
-    receiveBmv(): void {
+		try {
+			port = this.portFactory(serialportPath, { baudRate: 19200 }, openCallback);
+			state.closeListener = () => this.handlePortClosed(port);
+			state.dataListener = data => {
+				if (this.port !== port || !state.ready || state.closed) {
+					return;
+				}
+				try {
+					this.parser.receive(Buffer.from(data));
+				} catch (error) {
+					this.reportError(error);
+				}
+			};
+			this.portStates.set(port, state);
+			this.port = port;
+			port.on("error", this.errorListener);
+			port.on("close", state.closeListener);
 
-        if (this.port) {
-            const parser = this.port.pipe(new SerialPort.parsers.Delimiter({ delimiter: '\r\n' }));
-            // eslint-disable-next-line @typescript-eslint/no-this-alias
-            const self = this;
+			await this.withTimeout(openResult.promise, this.openTimeoutMs, "open");
+			state.rejectPending = undefined;
+			this.assertPortUsable(port, state);
+			this.assertNotCloseRequested(closeRequest);
 
-            // on recive data event
-            parser.on('data', function (data: any) {
+			const setResult = deferred<void>();
+			state.rejectPending = setResult.reject;
+			port.set({ dtr: false, rts: false, cts: false, brk: false }, error => {
+				if (error) setResult.reject(error);
+				else setResult.resolve();
+			});
+			await this.withTimeout(setResult.promise, this.openTimeoutMs, "set");
+			state.rejectPending = undefined;
+			this.assertPortUsable(port, state);
+			this.assertNotCloseRequested(closeRequest);
 
-                //line = new Buffer(data).toString('ascii');
-                const line = new Buffer(data)
-                //console.log("DATA->" , line)
-                self.frame = Buffer.concat([self.frame, line, Buffer.from("\r\n")]);
+			port.on("data", state.dataListener);
+			state.ready = true;
+		} catch (error) {
+			const normalized = this.asError(error);
+			state.failed = true;
+			state.ready = false;
+			state.rejectPending = undefined;
+			if (port!) {
+				await this.handleOpenFailure(port, normalized);
+			}
+			throw normalized;
+		}
+	}
 
-                // Detect end of frame
-                if (line.toString().startsWith("Checksum")) {
+	close(): Promise<void> {
+		this.closeRequestId++;
+		if (this.closePromise) {
+			return this.closePromise;
+		}
+		const operation = this.performClose();
+		this.closePromise = operation;
+		const clear = (): void => {
+			if (this.closePromise === operation) {
+				this.closePromise = undefined;
+			}
+		};
+		void operation.then(clear, clear);
+		return operation;
+	}
 
-                    //console.log("detect end of frame")
-                    // Modulo256
-                    let sum = 0;
-                    for (let i = 0; i < self.frame.length; i++) {
-                        sum = (sum + self.frame[i]) % 256;
-                    }
+	private async performClose(): Promise<void> {
+		if (this.openPromise) {
+			await this.openPromise.catch(() => undefined);
+		}
+		const port = this.port;
+		if (!port) {
+			this.parser.reset();
+			return;
+		}
+		await this.closePort(port);
+	}
 
-                    if (sum == 0) {
-                        // frame is ok
-                        self.parseValues(self.frame);
-                        self.cb(self.data);
+	private async closePort(port: SerialPortLike): Promise<void> {
+		const state = this.portStates.get(port);
+		if (!state || state.closed) {
+			this.cleanupPort(port);
+			return;
+		}
+		if (!port.isOpen && !state.closePending) {
+			this.cleanupPort(port);
+			return;
+		}
+		state.ready = false;
+		port.removeListener("data", state.dataListener);
+		if (this.port === port) {
+			this.parser.reset();
+		}
 
-                    } else {
-                        //console.log("frame error !!!");
-                    }
+		const closeEvent = deferred<void>();
+		const waiter = (): void => closeEvent.resolve();
+		let waiters = this.closeWaiters.get(port);
+		if (!waiters) {
+			waiters = new Set();
+			this.closeWaiters.set(port, waiters);
+		}
+		waiters.add(waiter);
+		try {
+			if (state.closePending) {
+				await this.withTimeout(closeEvent.promise, this.closeTimeoutMs, "close");
+			} else {
+				const callbackResult = deferred<void>();
+				state.closePending = true;
+				port.close(error => {
+					if (error) {
+						state.closePending = false;
+						callbackResult.reject(error);
+						return;
+					}
+					this.handlePortClosed(port);
+					callbackResult.resolve();
+				});
+				await this.withTimeout(Promise.race([callbackResult.promise, closeEvent.promise]), this.closeTimeoutMs, "close");
+			}
+		} catch (error) {
+			// An outstanding close stays pending while the port reports itself
+			// closed, so a later attempt waits for it instead of replacing it.
+			state.ready = false;
+			if (port.isOpen) {
+				state.closePending = false;
+			}
+			throw error;
+		} finally {
+			const registered = this.closeWaiters.get(port);
+			registered?.delete(waiter);
+			if (registered?.size === 0) {
+				this.closeWaiters.delete(port);
+			}
+		}
+	}
 
-                    // reset frame
-                    self.frame = new Buffer(0);
-                }
+	private async handleOpenFailure(port: SerialPortLike, error: Error): Promise<void> {
+		const state = this.portStates.get(port);
+		this.parser.reset();
+		if (state) {
+			port.removeListener("data", state.dataListener);
+		}
+		try {
+			if ((port.isOpen || state?.closePending) && !state?.closed) {
+				await this.closePort(port);
+			} else if (!(error instanceof SerialOperationTimeoutError && state?.failed)) {
+				this.cleanupPort(port);
+			}
+		} catch (closeError) {
+			this.reportError(closeError);
+		}
+		this.reportError(error);
+	}
 
-            });
+	private async closeLatePort(port: SerialPortLike): Promise<void> {
+		const state = this.portStates.get(port);
+		while (state && !state.closed) {
+			try {
+				await this.closePort(port);
+				return;
+			} catch (error) {
+				this.reportError(error);
+				await this.delay(this.lateCloseRetryMs);
+			}
+		}
+		this.cleanupPort(port);
+	}
 
+	private delay(milliseconds: number): Promise<void> {
+		return new Promise(resolve => {
+			const timer = setTimeout(resolve, milliseconds);
+			if (typeof timer.unref === "function") timer.unref();
+		});
+	}
 
-        }
-    }
+	private handlePortClosed(port: SerialPortLike): void {
+		const state = this.portStates.get(port);
+		if (!state || state.closed) {
+			return;
+		}
+		state.closed = true;
+		state.ready = false;
+		state.closePending = false;
+		state.rejectPending?.(new Error("Serial port closed while opening"));
+		state.rejectPending = undefined;
+		const waiters = this.closeWaiters.get(port);
+		if (waiters) {
+			for (const waiter of [...waiters]) waiter();
+		}
+		if (this.port === port) {
+			this.port = undefined;
+			this.parser.reset();
+		}
+		this.cleanupPort(port);
+	}
 
-    // convert frame to javascript object
-    parseValues(frame: Buffer): void {
+	private assertPortUsable(port: SerialPortLike, state: PortState): void {
+		if (state.closed || !port.isOpen) {
+			throw new Error("Serial port closed while opening");
+		}
+	}
 
-        //console.log("parseValues");
-        const lines = new Buffer(frame).toString('ascii').split('\r\n');
+	private assertNotCloseRequested(closeRequest: number): void {
+		if (closeRequest !== this.closeRequestId) {
+			throw new Error("Serial open cancelled by close request");
+		}
+	}
 
-        for (let i = 0; i < lines.length - 2; i++) {
-            const line = lines[i].split('\t');
-            (this.data as any)[line[0]] = (this.meta as any)[line[0]].scale(line[1]);
-        }
-    }
+	private cleanupPort(port: SerialPortLike): void {
+		const state = this.portStates.get(port);
+		if (this.port === port) {
+			this.port = undefined;
+		}
+		if (state) {
+			port.removeListener("data", state.dataListener);
+			port.removeListener("close", state.closeListener);
+			state.ready = false;
+		}
+		port.removeListener("error", this.errorListener);
+	}
 
+	private withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new SerialOperationTimeoutError(operation, timeoutMs)), timeoutMs);
+			if (typeof timer.unref === "function") {
+				timer.unref();
+			}
+			promise.then(
+				value => {
+					clearTimeout(timer);
+					resolve(value);
+				},
+				error => {
+					clearTimeout(timer);
+					reject(error);
+				},
+			);
+		});
+	}
 
-    //this.port
+	private readonly errorListener = (error: Error): void => {
+		this.reportError(error);
+	};
 
-    async open(serialportPath: string): Promise<void> {
+	private asError(error: unknown): Error {
+		return error instanceof Error ? error : new Error(String(error));
+	}
 
-        return new Promise((resolve, reject) => {
-            // open serial port
-            this.port = new SerialPort(serialportPath, {
-                baudRate: 19200,
-            }, (error) => {
-                if (error) {
-                    console.log("BMV error:", error)
-                    reject("bmv error" + error)
-                } else {
-                    if (this.port) {
-                        this.port.set({
-                            "dtr": false,
-                            "rts": false,
-                            "cts": false,
-                            //"dts": false,
-                            "brk": false,
-                        });
-                        console.log("bmv port is open")
-                        this.receiveBmv();
-                    }
-                    resolve();
-                }
-            });
-
-        })
-    }
-
-    close(): void {
-        if (this.port && this.isOpen) {
-            this.port.close();
-        }
-    }
-
-    isOpen(): boolean {
-        return (this.port && this.port.isOpen) ? true : false
-    }
-
+	private reportError(error: unknown): void {
+		const normalized = this.asError(error);
+		if (this.onError) {
+			this.onError(normalized);
+		}
+	}
 }
-
-
-export type CallbackFunction = (data: Bmv_data) => void;
-
-export interface Bmv_data {
-    "V": number,
-    "VS": number,
-    "I": number,
-    "CE": number,
-    "SOC": number,
-    "TTG": number,
-    "Alarm": boolean,
-    "Relay": boolean,
-    "AR": number,
-    "BMV": string,
-    "FW": string,
-    "H1": number,
-    "H2": number,
-    "H3": number,
-    "H4": number,
-    "H5": number,
-    "H6": number,
-    "H7": number,
-    "H8": number,
-    "H9": number,
-    "H10": number,
-    "H11": number,
-    "H12": number,
-    "H13": number,
-    "H14": number,
-    "H15": number,
-    "H16": number,
-
-}
-
-
-export interface Bmv_meta_entry {
-    scale: (n: any) => any,
-    unit: string,
-    label: string,
-    descr: string,
-    role: string, // for ioBroker
-    type: string  // for ioBroker
-}
-
-export interface Bmv_meta {
-    "V": Bmv_meta_entry,
-    "VS": Bmv_meta_entry,
-    "I": Bmv_meta_entry,
-    "CE": Bmv_meta_entry,
-    "SOC": Bmv_meta_entry,
-    "TTG": Bmv_meta_entry,
-    "Alarm": Bmv_meta_entry,
-    "Relay": Bmv_meta_entry,
-    "AR": Bmv_meta_entry,
-    "BMV": Bmv_meta_entry,
-    "FW": Bmv_meta_entry,
-    "H1": Bmv_meta_entry,
-    "H2": Bmv_meta_entry,
-    "H3": Bmv_meta_entry,
-    "H4": Bmv_meta_entry,
-    "H5": Bmv_meta_entry,
-    "H6": Bmv_meta_entry,
-    "H7": Bmv_meta_entry,
-    "H8": Bmv_meta_entry,
-    "H9": Bmv_meta_entry,
-    "H10": Bmv_meta_entry,
-    "H11": Bmv_meta_entry,
-    "H12": Bmv_meta_entry,
-    "H13": Bmv_meta_entry,
-    "H14": Bmv_meta_entry,
-    "H15": Bmv_meta_entry,
-    "H16": Bmv_meta_entry,
-}
-

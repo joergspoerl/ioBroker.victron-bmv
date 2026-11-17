@@ -1,262 +1,272 @@
-/*
- * Created with @iobroker/create-adapter v2.0.1
- */
-
-// The adapter-core module gives you access to the core ioBroker functions
-// you need to create an adapter
 import * as utils from "@iobroker/adapter-core";
-import { Bmv_data, Bmv_meta_entry, VictronBmvCom } from "./victronBmvCom";
+import { VE_DIRECT_FIELDS, VeDirectFrame, VeDirectValue } from "./veDirect/fields";
+import { VictronBmvCom } from "./victronBmvCom";
 
-// Load your modules here, e.g.:
-// import * as fs from "fs";
+const WATCHDOG_INTERVAL_MS = 1000;
+const DATA_TIMEOUT_MS = 5000;
+const RECONNECT_COOLDOWN_MS = 5000;
 
-class victronBmv extends utils.Adapter {
-	bmv: VictronBmvCom = new VictronBmvCom();
-	lastResultTime = 0;
-	watchDogintervalRef: ioBroker.Interval | undefined;
-	watchDogIntervalTime = 10;
+export class VictronBmv extends utils.Adapter {
+	readonly bmv = new VictronBmvCom();
+	private lastFrameTime = 0;
+	private lastOpenAttempt = 0;
+	private serialPortPath = "";
+	private watchDogInterval: ReturnType<typeof setInterval> | undefined;
+	private activeWatchDog: Promise<void> | undefined;
+	private readyPromise: Promise<void> | undefined;
+	private frameQueue: Promise<void> = Promise.resolve();
+	private connectionState: boolean | undefined;
+	private connectionRequested: boolean | undefined;
+	private unloaded = false;
+	private unloadPromise: Promise<void> | undefined;
+	private readonly stateQueues = new Map<string, Promise<void>>();
+	private readonly lastStateValues = new Map<string, VeDirectValue>();
+
 	public constructor(options: Partial<utils.AdapterOptions> = {}) {
-		super({
-			...options,
-			name: "victron-bmv",
-		});
-		this.on("ready", this.onReady.bind(this));
-		this.on("stateChange", this.onStateChange.bind(this));
-		// this.on("objectChange", this.onObjectChange.bind(this));
-		// this.on("message", this.onMessage.bind(this));
+		super({ ...options, name: "victron-bmv" });
+		this.on("ready", this.handleReady.bind(this));
 		this.on("unload", this.onUnload.bind(this));
 	}
 
-	/**
-	 * Is called when databases are connected and adapter received configuration.
-	 */
-	private async onReady(): Promise<void> {
-		// Initialize your adapter here
-
-		// The adapters config (in the instance object everything under the attribute "native") is accessible via
-		// this.config:
-		this.log.info("config option2: " + this.config.serialPortPath);
-
-		/*
-		For every state in the system there has to be also an object of type state
-		Here a simple template for a boolean variable named "testVariable"
-		Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
-		*/
-		// /dev/tty.usbserial-FTG63ICY
-
-		await this.initConnectionInfoObject();
-		await this.initBmvObjects();
-
-		this.watchDog(); // first connection
-		this.watchDogintervalRef = this.setInterval(async () => {
-			this.watchDog();
-		}, this.watchDogIntervalTime * 1000);
-
-		this.bmv.cb = async (data: Bmv_data) => {
-			this.bmvCallback(data);
-		};
-
-		// In order to get state updates, you need to subscribe to them. The following line adds a subscription for our variable we have created above.
-
-		//this.subscribeStates("*");
-
-		// You can also add a subscription for multiple states. The following line watches all states starting with "lights."
-		// this.subscribeStates("lights.*");
-		// Or, if you really must, you can also watch all states. Don't do this if you don't need to. Otherwise this will cause a lot of unnecessary load on the system:
-		// this.subscribeStates("*");
-
-		/*
-		setState examples
-		you will notice that each setState will cause the stateChange event to fire (because of above subscribeStates cmd)
-		*/
-		// the variable testVariable is set to true as command (ack=false)
-		// await this.setStateAsync("testVariable", true);
-
-		// same thing, but the value is flagged "ack"
-		// ack should be always set to true if the value is received from or acknowledged from the target system
-		// await this.setStateAsync("testVariable", { val: true, ack: true });
-
-		// same thing, but the state is deleted after 30s (getState will return null afterwards)
-		// await this.setStateAsync("testVariable", { val: true, ack: true, expire: 30 });
-
-		// examples for the checkPassword/checkGroup functions
-		let result = await this.checkPasswordAsync("admin", "iobroker");
-		this.log.info("check user admin pw iobroker: " + result);
-
-		result = await this.checkGroupAsync("admin", "admin");
-		this.log.info("check group user admin group admin: " + result);
-	}
-
-	private async initConnectionInfoObject(): Promise<void> {
-		await this.setObjectNotExistsAsync("info.connection", {
-			_id: "info.connection",
-			type: "state",
-			common: {
-				role: "indicator.connected",
-				name: "If communication with circuit works",
-				type: "boolean",
-				read: true,
-				write: false,
-				def: false,
-			},
-			native: {},
+	private handleReady(): void {
+		if (this.readyPromise) {
+			return;
+		}
+		const operation = this.onReady().catch(async error => {
+			this.log.error(`Could not initialize VE.Direct adapter: ${this.errorText(error)}`);
+			await this.safeSetConnectionState(false);
+		});
+		this.readyPromise = operation;
+		void operation.catch(error => {
+			this.log.error(`VE.Direct ready handler failed: ${this.errorText(error)}`);
 		});
 	}
 
-	private async watchDog(): Promise<void> {
-		const timeDiffToLastResult = Date.now() - this.lastResultTime;
-		this.log.debug("watchdog interval");
-		this.log.debug("watchdog interval lastResultTime: " + this.lastResultTime);
-		this.log.debug("watchdog interval timeDiffToLastResult: " + timeDiffToLastResult);
+	private async onReady(): Promise<void> {
+		if (this.unloaded) {
+			return;
+		}
+		await this.initObjects();
+		if (this.unloaded) {
+			return;
+		}
+		await this.safeSetConnectionState(false);
+		if (this.unloaded) {
+			return;
+		}
+		this.serialPortPath = (this.config.serialPortPath || "").trim();
+		if (!this.serialPortPath || this.serialPortPath === "/dev/xxx") {
+			this.log.error("Configure a valid VE.Direct serial port before starting the adapter");
+			return;
+		}
+		this.bmv.onValidFrame = () => {
+			this.lastFrameTime = Date.now();
+			void this.safeSetConnectionState(true);
+		};
+		this.bmv.onFrame = frame => {
+			this.enqueueFrame({ ...frame });
+		};
+		this.bmv.onError = error => {
+			this.log.error(`VE.Direct serial error: ${error.message}`);
+		};
+		if (this.unloaded) {
+			return;
+		}
+		void this.watchDog();
+		this.watchDogInterval = setInterval(() => void this.watchDog(), WATCHDOG_INTERVAL_MS);
+	}
 
-		if (timeDiffToLastResult > 1000) {
-			this.log.error("bmv connection lost !");
-
-			try {
-				// this.bmv.close();
-				if (!this.bmv.isOpen()) {
-					await this.bmv.open(this.config.serialPortPath);
-				}
-				await this.setInfoConnectionState(true);
-			} catch (exception) {
-				await this.setInfoConnectionState(false);
-				this.log.error("open connection to bmv: " + exception);
-			}
+	private async initObjects(): Promise<void> {
+		const connectionCommon: ioBroker.StateCommon = {
+			name: "Fresh valid VE.Direct frame received",
+			type: "boolean",
+			role: "indicator.connected",
+			read: true,
+			write: false,
+			def: false,
+		};
+		await this.setObjectNotExistsAsync("info.connection", {
+			type: "state",
+			common: connectionCommon,
+			native: {},
+		});
+		if (this.unloaded) return;
+		await this.extendObjectAsync("info.connection", { common: connectionCommon });
+		if (this.unloaded) return;
+		for (const field of Object.values(VE_DIRECT_FIELDS)) {
+			if (this.unloaded) return;
+			const common: ioBroker.StateCommon = {
+				name: field.label,
+				type: field.type,
+				role: field.role,
+				desc: field.descr,
+				read: true,
+				write: false,
+				unit: field.unit,
+			};
+			await this.setObjectNotExistsAsync(field.id, { type: "state", common, native: {} });
+			if (this.unloaded) return;
+			await this.extendObjectAsync(field.id, { common });
+			if (this.unloaded) return;
 		}
 	}
 
-	private async bmvCallback(data: Bmv_data): Promise<void> {
-		this.lastResultTime = Date.now();
-		await this.setInfoConnectionState(true);
-		this.log.debug("bmv callback: data:" + JSON.stringify(data));
-		await this.setStateAsync("V", data.V, true);
-		await this.setStateAsync("VS", data.VS, true);
-		await this.setStateAsync("I", data.I, true);
-		await this.setStateAsync("CE", data.CE, true);
-		await this.setStateAsync("SOC", data.SOC, true);
-		await this.setStateAsync("TTG", data.TTG, true);
-		await this.setStateAsync("Alarm", data.Alarm, true);
-		await this.setStateAsync("Relay", data.Relay, true);
-		await this.setStateAsync("AR", data.AR, true);
-		await this.setStateAsync("BMV", data.BMV, true);
-		await this.setStateAsync("FW", data.FW, true);
-
-		await this.setStateAsync("H1", data.H1, true);
-		await this.setStateAsync("H2", data.H2, true);
-		await this.setStateAsync("H3", data.H3, true);
-		await this.setStateAsync("H4", data.H4, true);
-		await this.setStateAsync("H5", data.H5, true);
-		await this.setStateAsync("H6", data.H6, true);
-		await this.setStateAsync("H7", data.H7, true);
-		await this.setStateAsync("H8", data.H8, true);
-		await this.setStateAsync("H9", data.H9, true);
-		await this.setStateAsync("H10", data.H10, true);
-		await this.setStateAsync("H11", data.H11, true);
-		await this.setStateAsync("H12", data.H12, true);
-		await this.setStateAsync("H13", data.H13, true);
-		await this.setStateAsync("H14", data.H14, true);
-		await this.setStateAsync("H15", data.H15, true);
-		await this.setStateAsync("H16", data.H16, true);
-
-		return;
-	}
-	private async setInfoConnectionState(state: boolean): Promise<void> {
-		await this.setStateAsync("info.connection", state, true);
-	}
-
-	private async initBmvObjects(): Promise<void> {
-		const propNames = Object.getOwnPropertyNames(this.bmv?.meta);
-
-		for (let i = 0; i < propNames.length; i++) {
-			const propName = propNames[i];
-			const prop = (this.bmv?.meta as any)[propName] as Bmv_meta_entry;
-			const type: ioBroker.CommonType = prop.type as ioBroker.CommonType;
-			let name = prop.label;
-			if (prop.unit && prop.unit.length > 0) {
-				name += " ( " + prop.unit + " )";
-			}
-			await this.setObjectNotExistsAsync(propName, {
-				type: "state",
-				common: {
-					name: name,
-					type: type,
-					role: prop.role,
-					read: true,
-					write: false,
-					unit: prop.unit,
-				},
-				native: {},
-			});
+	private watchDog(): Promise<void> {
+		if (this.activeWatchDog) {
+			return this.activeWatchDog;
 		}
+		const operation = this.performWatchDog();
+		this.activeWatchDog = operation;
+		const clear = (): void => {
+			if (this.activeWatchDog === operation) {
+				this.activeWatchDog = undefined;
+			}
+		};
+		void operation.then(clear, clear);
+		return operation;
 	}
 
-	/**
-	 * Is called when adapter shuts down - callback has to be called under any circumstances!
-	 */
-	private onUnload(callback: () => void): void {
+	private isFresh(): boolean {
+		return this.lastFrameTime > 0 && Date.now() - this.lastFrameTime < DATA_TIMEOUT_MS;
+	}
+
+	private async performWatchDog(): Promise<void> {
+		if (this.unloaded || !this.serialPortPath) {
+			return;
+		}
+		if (this.isFresh()) {
+			return;
+		}
+		await this.safeSetConnectionState(false);
+		if (this.unloaded || this.isFresh()) {
+			return;
+		}
+		const now = Date.now();
+		if (now - this.lastOpenAttempt < RECONNECT_COOLDOWN_MS) {
+			return;
+		}
+		this.lastOpenAttempt = now;
 		try {
-			// Here you must clear all timeouts or intervals that may still be active
-			// clearTimeout(timeout1);
-			// clearTimeout(timeout2);
-			// ...
-			clearInterval(this.watchDogintervalRef);
-			this.bmv?.close();
-			callback();
-		} catch (e) {
-			callback();
+			if (this.bmv.isOpen()) {
+				await this.bmv.close();
+				if (this.unloaded) {
+					return;
+				}
+			}
+			if (this.unloaded) {
+				return;
+			}
+			await this.bmv.open(this.serialPortPath);
+			// Opening a port is not a device connection. info.connection becomes
+			// true only after the first checksum-valid frame.
+		} catch (error) {
+			if (!this.unloaded) {
+				this.log.error(`Could not open/reopen VE.Direct port: ${this.errorText(error)}`);
+				await this.safeSetConnectionState(false);
+			}
 		}
 	}
 
-	// If you need to react to object changes, uncomment the following block and the corresponding line in the constructor.
-	// You also need to subscribe to the objects with `this.subscribeObjects`, similar to `this.subscribeStates`.
-	// /**
-	//  * Is called if a subscribed object changes
-	//  */
-	// private onObjectChange(id: string, obj: ioBroker.Object | null | undefined): void {
-	// 	if (obj) {
-	// 		// The object was changed
-	// 		this.log.info(`object ${id} changed: ${JSON.stringify(obj)}`);
-	// 	} else {
-	// 		// The object was deleted
-	// 		this.log.info(`object ${id} deleted`);
-	// 	}
-	// }
+	private enqueueFrame(frame: VeDirectFrame): void {
+		if (this.unloaded) {
+			return;
+		}
+		const snapshot = { ...frame };
+		const operation = this.frameQueue.then(() => this.publishFrame(snapshot));
+		this.frameQueue = operation.catch(error => {
+			this.log.error(`Could not process VE.Direct frame: ${this.errorText(error)}`);
+		});
+	}
 
-	/**
-	 * Is called if a subscribed state changes
-	 */
-	private onStateChange(id: string, state: ioBroker.State | null | undefined): void {
-		if (state) {
-			// The state was changed
-			this.log.info(`state ${id} changed: ${state.val} (ack = ${state.ack})`);
-		} else {
-			// The state was deleted
-			this.log.info(`state ${id} deleted`);
+	private async publishFrame(frame: VeDirectFrame): Promise<void> {
+		if (this.unloaded) {
+			return;
+		}
+		await this.safeSetConnectionState(true);
+		for (const [key, value] of Object.entries(frame)) {
+			if (this.unloaded) {
+				return;
+			}
+			if (this.lastStateValues.has(key) && this.lastStateValues.get(key) === value) {
+				continue;
+			}
+			try {
+				await this.writeState(key, value);
+				this.lastStateValues.set(key, value);
+			} catch (error) {
+				this.log.error(`Could not publish ${key}: ${this.errorText(error)}`);
+			}
 		}
 	}
 
-	// If you need to accept messages in your adapter, uncomment the following block and the corresponding line in the constructor.
-	// /**
-	//  * Some message was sent to this instance over message box. Used by email, pushover, text2speech, ...
-	//  * Using this method requires "common.messagebox" property to be set to true in io-package.json
-	//  */
-	// private onMessage(obj: ioBroker.Message): void {
-	// 	if (typeof obj === "object" && obj.message) {
-	// 		if (obj.command === "send") {
-	// 			// e.g. send email or pushover or whatever
-	// 			this.log.info("send command");
+	private writeState(key: string, value: VeDirectValue): Promise<void> {
+		const previous = this.stateQueues.get(key) ?? Promise.resolve();
+		const result = previous.catch(() => undefined).then(() => this.setStateAsync(key, { val: value, ack: true })).then(() => undefined);
+		const tracked = result.then(() => undefined, () => undefined);
+		this.stateQueues.set(key, tracked);
+		void tracked.then(() => {
+			if (this.stateQueues.get(key) === tracked) {
+				this.stateQueues.delete(key);
+			}
+		});
+		return result;
+	}
 
-	// 			// Send response in callback if required
-	// 			if (obj.callback) this.sendTo(obj.from, obj.command, "Message received", obj.callback);
-	// 		}
-	// 	}
-	// }
+	private async safeSetConnectionState(connected: boolean): Promise<void> {
+		if (this.connectionRequested === connected) {
+			return;
+		}
+		this.connectionRequested = connected;
+		try {
+			await this.writeState("info.connection", connected);
+			this.connectionState = connected;
+		} catch (error) {
+			if (this.connectionRequested === connected) {
+				this.connectionRequested = undefined;
+			}
+			this.log.error(`Could not update info.connection: ${this.errorText(error)}`);
+		}
+	}
+
+	private onUnload(callback: () => void): void {
+		if (this.unloadPromise) {
+			void this.unloadPromise.then(callback, callback);
+			return;
+		}
+		this.unloaded = true;
+		if (this.watchDogInterval) {
+			clearInterval(this.watchDogInterval);
+			this.watchDogInterval = undefined;
+		}
+		this.bmv.onFrame = undefined;
+		this.bmv.onValidFrame = undefined;
+		const pendingWatchDog = this.activeWatchDog;
+		const pendingReady = this.readyPromise;
+		const operation = (async () => {
+			const pending: Promise<void>[] = [
+				this.bmv.close().catch(error => this.log.error(`Error closing VE.Direct port: ${this.errorText(error)}`)),
+			];
+			if (pendingWatchDog) pending.push(pendingWatchDog.catch(() => undefined));
+			if (pendingReady) pending.push(pendingReady.catch(() => undefined));
+			await Promise.all(pending);
+			await this.safeSetConnectionState(false);
+			await Promise.all([...this.stateQueues.values()].map(promise => promise.catch(() => undefined)));
+		})();
+		this.unloadPromise = operation;
+		void operation.then(callback, error => {
+			this.log.error(`Error during VE.Direct unload: ${this.errorText(error)}`);
+			callback();
+		});
+	}
+
+	private errorText(error: unknown): string {
+		return error instanceof Error ? error.stack || error.message : String(error);
+	}
 }
 
 if (require.main !== module) {
-	// Export the constructor in compact mode
-	module.exports = (options: Partial<utils.AdapterOptions> | undefined) => new victronBmv(options);
+	module.exports = (options: Partial<utils.AdapterOptions> | undefined) => new VictronBmv(options);
+	module.exports.VictronBmv = VictronBmv;
 } else {
-	// otherwise start the instance directly
-	(() => new victronBmv())();
+	(() => new VictronBmv())();
 }

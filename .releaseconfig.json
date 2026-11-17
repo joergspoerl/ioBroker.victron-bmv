@@ -1,0 +1,6 @@
+{
+	"plugins": ["iobroker"],
+	"exec": {
+		"before_commit": "npm run test:all"
+	}
+}
