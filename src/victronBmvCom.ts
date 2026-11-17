@@ -28,6 +28,7 @@ interface PortState {
 	closed: boolean;
 	ready: boolean;
 	failed: boolean;
+	closePending: boolean;
 	rejectPending: ((error: Error) => void) | undefined;
 	closeListener: () => void;
 	dataListener: (data: Buffer) => void;
@@ -125,7 +126,7 @@ export class VictronBmvCom {
 			if (existing.isOpen && state?.ready && !state.closed) {
 				return;
 			}
-			if (existing.isOpen) {
+			if (existing.isOpen || state?.closePending) {
 				await this.closePort(existing);
 			} else if (state?.failed && !state.closed) {
 				// Keep its late-open callback/listeners alive, but do not let it
@@ -144,6 +145,7 @@ export class VictronBmvCom {
 			closed: false,
 			ready: false,
 			failed: false,
+			closePending: false,
 			rejectPending: openResult.reject,
 			closeListener: () => undefined,
 			dataListener: () => undefined,
@@ -247,7 +249,11 @@ export class VictronBmvCom {
 
 	private async closePort(port: SerialPortLike): Promise<void> {
 		const state = this.portStates.get(port);
-		if (!state || state.closed || !port.isOpen) {
+		if (!state || state.closed) {
+			this.cleanupPort(port);
+			return;
+		}
+		if (!port.isOpen && !state.closePending) {
 			this.cleanupPort(port);
 			return;
 		}
@@ -257,23 +263,31 @@ export class VictronBmvCom {
 			this.parser.reset();
 		}
 
-		const callbackResult = deferred<void>();
 		const closeEvent = deferred<void>();
 		this.closeWaiters.set(port, () => closeEvent.resolve());
 		try {
-			port.close(error => error ? callbackResult.reject(error) : callbackResult.resolve());
-			await this.withTimeout(Promise.race([callbackResult.promise, closeEvent.promise]), this.closeTimeoutMs, "close");
-			if (!state.closed && port.isOpen) {
-				throw new Error("Serial port remained open after close");
-			}
-			this.cleanupPort(port);
-		} catch (error) {
-			if (!state.closed && port.isOpen) {
-				// Keep a current still-open port retryable. A late old port must
-				// never replace a newer session; closeLatePort owns its retry loop.
-				state.ready = false;
+			if (state.closePending) {
+				await this.withTimeout(closeEvent.promise, this.closeTimeoutMs, "close");
 			} else {
-				this.cleanupPort(port);
+				const callbackResult = deferred<void>();
+				state.closePending = true;
+				port.close(error => {
+					if (error) {
+						state.closePending = false;
+						callbackResult.reject(error);
+						return;
+					}
+					this.handlePortClosed(port);
+					callbackResult.resolve();
+				});
+				await this.withTimeout(Promise.race([callbackResult.promise, closeEvent.promise]), this.closeTimeoutMs, "close");
+			}
+		} catch (error) {
+			// An outstanding close stays pending while the port reports itself
+			// closed, so a later attempt waits for it instead of replacing it.
+			state.ready = false;
+			if (port.isOpen) {
+				state.closePending = false;
 			}
 			throw error;
 		} finally {
@@ -288,7 +302,7 @@ export class VictronBmvCom {
 			port.removeListener("data", state.dataListener);
 		}
 		try {
-			if (port.isOpen && !state?.closed) {
+			if ((port.isOpen || state?.closePending) && !state?.closed) {
 				await this.closePort(port);
 			} else if (!(error instanceof SerialOperationTimeoutError && state?.failed)) {
 				this.cleanupPort(port);
@@ -301,7 +315,7 @@ export class VictronBmvCom {
 
 	private async closeLatePort(port: SerialPortLike): Promise<void> {
 		const state = this.portStates.get(port);
-		while (!state?.closed && port.isOpen) {
+		while (state && !state.closed) {
 			try {
 				await this.closePort(port);
 				return;
@@ -327,6 +341,7 @@ export class VictronBmvCom {
 		}
 		state.closed = true;
 		state.ready = false;
+		state.closePending = false;
 		state.rejectPending?.(new Error("Serial port closed while opening"));
 		state.rejectPending = undefined;
 		this.closeWaiters.get(port)?.();

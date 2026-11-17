@@ -21,12 +21,14 @@ class FakeSerialPort extends EventEmitter implements SerialPortLike {
 
 	close(callback: (error?: Error | null) => void): void {
 		this.closeCalls++;
+		const wasOpen = this.isOpen;
+		this.isOpen = false;
 		const finish = (): void => {
 			if (this.failClose) {
+				this.isOpen = wasOpen;
 				callback(this.failClose);
 				return;
 			}
-			this.isOpen = false;
 			if (this.emitCloseOnClose) this.emit("close");
 			callback(null);
 		};
@@ -393,6 +395,52 @@ describe("VictronBmvCom serial lifecycle", () => {
 		expect(com.isOpen()).to.equal(false);
 	});
 
+	it("keeps an outstanding native close retryable instead of replacing the port", async () => {
+		const first = new FakeSerialPort();
+		const second = new FakeSerialPort();
+		let factoryCalls = 0;
+		let releaseNativeClose!: () => void;
+		const com = new VictronBmvCom((_path, _options, callback) => {
+			const port = factoryCalls++ === 0 ? first : second;
+			process.nextTick(() => {
+				port.isOpen = true;
+				callback();
+			});
+			return port;
+		}, { openTimeoutMs: 20, closeTimeoutMs: 20, lateCloseRetryMs: 1 });
+
+		await com.open("first");
+		first.closeGate = new Promise<void>(resolve => releaseNativeClose = resolve);
+		try {
+			await com.close();
+			expect.fail("close should time out");
+		} catch (error) {
+			expect((error as Error).message).to.contain("close timed out");
+		}
+		expect(first.isOpen).to.equal(false);
+		expect(com.isOpen()).to.equal(false);
+		expect(first.listenerCount("close")).to.equal(1);
+		expect(first.listenerCount("error")).to.equal(1);
+
+		try {
+			await com.open("second");
+			expect.fail("open must not replace a port whose close is outstanding");
+		} catch (error) {
+			expect((error as Error).message).to.contain("close timed out");
+		}
+		expect(factoryCalls).to.equal(1);
+
+		releaseNativeClose();
+		await new Promise(resolve => setImmediate(resolve));
+		expect(first.listenerCount("close")).to.equal(0);
+		expect(first.listenerCount("error")).to.equal(0);
+
+		await com.open("second");
+		expect(factoryCalls).to.equal(2);
+		expect(com.isOpen()).to.equal(true);
+		await com.close();
+	});
+
 	it("never lets a failed late close of an old port hijack the current session", async () => {
 		const first = new FakeSerialPort();
 		const second = new FakeSerialPort();
@@ -432,6 +480,44 @@ describe("VictronBmvCom serial lifecycle", () => {
 		await com.close();
 		expect(second.closeCalls).to.equal(1);
 		expect(second.isOpen).to.equal(false);
+	});
+
+	it("keeps retrying an outstanding native close of a late port without dropping it", async () => {
+		const late = new FakeSerialPort();
+		let openCallback!: (error?: Error | null) => void;
+		const errors: Error[] = [];
+		const com = new VictronBmvCom((_path, _options, callback) => {
+			openCallback = callback;
+			return late;
+		}, { openTimeoutMs: 20, closeTimeoutMs: 20, lateCloseRetryMs: 1 });
+		com.onError = error => errors.push(error);
+
+		try {
+			await com.open("late");
+			expect.fail("open should time out");
+		} catch (error) {
+			expect((error as Error).message).to.contain("open timed out");
+		}
+		late.closeGate = new Promise<void>(() => undefined);
+		late.isOpen = true;
+		errors.length = 0;
+		openCallback();
+		await new Promise(resolve => setTimeout(resolve, 80));
+
+		expect(late.isOpen).to.equal(false);
+		expect(late.closeCalls).to.equal(1);
+		expect(late.listenerCount("close")).to.equal(1);
+		expect(late.listenerCount("error")).to.equal(1);
+		expect(errors.length).to.be.greaterThan(0);
+		for (const error of errors) {
+			expect(error.message).to.contain("close timed out");
+		}
+
+		late.emit("close");
+		await new Promise(resolve => setImmediate(resolve));
+		expect(late.listenerCount("close")).to.equal(0);
+		expect(late.listenerCount("error")).to.equal(0);
+		await com.close();
 	});
 
 	it("creates a new operation for reopen immediately after aborting a pending open", async () => {

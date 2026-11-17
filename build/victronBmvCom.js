@@ -82,7 +82,7 @@ class VictronBmvCom {
             if (existing.isOpen && (state === null || state === void 0 ? void 0 : state.ready) && !state.closed) {
                 return;
             }
-            if (existing.isOpen) {
+            if (existing.isOpen || (state === null || state === void 0 ? void 0 : state.closePending)) {
                 await this.closePort(existing);
             }
             else if ((state === null || state === void 0 ? void 0 : state.failed) && !state.closed) {
@@ -102,6 +102,7 @@ class VictronBmvCom {
             closed: false,
             ready: false,
             failed: false,
+            closePending: false,
             rejectPending: openResult.reject,
             closeListener: () => undefined,
             dataListener: () => undefined,
@@ -204,7 +205,11 @@ class VictronBmvCom {
     }
     async closePort(port) {
         const state = this.portStates.get(port);
-        if (!state || state.closed || !port.isOpen) {
+        if (!state || state.closed) {
+            this.cleanupPort(port);
+            return;
+        }
+        if (!port.isOpen && !state.closePending) {
             this.cleanupPort(port);
             return;
         }
@@ -213,25 +218,33 @@ class VictronBmvCom {
         if (this.port === port) {
             this.parser.reset();
         }
-        const callbackResult = deferred();
         const closeEvent = deferred();
         this.closeWaiters.set(port, () => closeEvent.resolve());
         try {
-            port.close(error => error ? callbackResult.reject(error) : callbackResult.resolve());
-            await this.withTimeout(Promise.race([callbackResult.promise, closeEvent.promise]), this.closeTimeoutMs, "close");
-            if (!state.closed && port.isOpen) {
-                throw new Error("Serial port remained open after close");
-            }
-            this.cleanupPort(port);
-        }
-        catch (error) {
-            if (!state.closed && port.isOpen) {
-                // Keep a current still-open port retryable. A late old port must
-                // never replace a newer session; closeLatePort owns its retry loop.
-                state.ready = false;
+            if (state.closePending) {
+                await this.withTimeout(closeEvent.promise, this.closeTimeoutMs, "close");
             }
             else {
-                this.cleanupPort(port);
+                const callbackResult = deferred();
+                state.closePending = true;
+                port.close(error => {
+                    if (error) {
+                        state.closePending = false;
+                        callbackResult.reject(error);
+                        return;
+                    }
+                    this.handlePortClosed(port);
+                    callbackResult.resolve();
+                });
+                await this.withTimeout(Promise.race([callbackResult.promise, closeEvent.promise]), this.closeTimeoutMs, "close");
+            }
+        }
+        catch (error) {
+            // An outstanding close stays pending while the port reports itself
+            // closed, so a later attempt waits for it instead of replacing it.
+            state.ready = false;
+            if (port.isOpen) {
+                state.closePending = false;
             }
             throw error;
         }
@@ -246,7 +259,7 @@ class VictronBmvCom {
             port.removeListener("data", state.dataListener);
         }
         try {
-            if (port.isOpen && !(state === null || state === void 0 ? void 0 : state.closed)) {
+            if ((port.isOpen || (state === null || state === void 0 ? void 0 : state.closePending)) && !(state === null || state === void 0 ? void 0 : state.closed)) {
                 await this.closePort(port);
             }
             else if (!(error instanceof SerialOperationTimeoutError && (state === null || state === void 0 ? void 0 : state.failed))) {
@@ -260,7 +273,7 @@ class VictronBmvCom {
     }
     async closeLatePort(port) {
         const state = this.portStates.get(port);
-        while (!(state === null || state === void 0 ? void 0 : state.closed) && port.isOpen) {
+        while (state && !state.closed) {
             try {
                 await this.closePort(port);
                 return;
@@ -287,6 +300,7 @@ class VictronBmvCom {
         }
         state.closed = true;
         state.ready = false;
+        state.closePending = false;
         (_a = state.rejectPending) === null || _a === void 0 ? void 0 : _a.call(state, new Error("Serial port closed while opening"));
         state.rejectPending = undefined;
         (_b = this.closeWaiters.get(port)) === null || _b === void 0 ? void 0 : _b();
