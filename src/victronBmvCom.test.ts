@@ -573,6 +573,7 @@ describe("VictronBmvCom serial lifecycle", () => {
 	it("notifies every concurrent waiter when one native close completes", async () => {
 		const first = new FakeSerialPort();
 		const second = new FakeSerialPort();
+		const closeTimeoutMs = 200;
 		let firstOpenCallback!: (error?: Error | null) => void;
 		let releaseClose!: () => void;
 		first.closeGate = new Promise<void>(resolve => releaseClose = resolve);
@@ -590,20 +591,31 @@ describe("VictronBmvCom serial lifecycle", () => {
 				});
 			}
 			return port;
-		}, { openTimeoutMs: 20, closeTimeoutMs: 30, lateCloseRetryMs: 1 });
-		com.onError = error => reported.push(error);
+		}, { openTimeoutMs: 20, closeTimeoutMs, lateCloseRetryMs: 5 });
 		try {
 			await com.open("first");
 			expect.fail("first open should time out");
 		} catch {}
-		reported.length = 0;
+
+		let initiatorTimedOut!: () => void;
+		const timedOut = new Promise<void>(resolve => initiatorTimedOut = resolve);
+		com.onError = error => {
+			reported.push(error);
+			initiatorTimedOut();
+		};
 
 		first.isOpen = true;
 		firstOpenCallback();
 		await new Promise(resolve => setImmediate(resolve));
 		expect(first.isOpen).to.equal(false); // SerialPort 12: closing implies isOpen=false.
+		expect(first.closeCalls).to.equal(1);
+		// Register the reopen half-way into the initiator's close window, so the
+		// initiator can time out while the native close is still outstanding.
+		await new Promise(resolve => setTimeout(resolve, closeTimeoutMs / 2));
 		const reopening = com.open("second");
-		await new Promise(resolve => setImmediate(resolve));
+		await timedOut;
+		// Only now does the native close complete. The earlier caller has already
+		// given up, so the reopen is the sole observer of this completion.
 		releaseClose();
 		await reopening;
 		await new Promise(resolve => setImmediate(resolve));
@@ -611,7 +623,7 @@ describe("VictronBmvCom serial lifecycle", () => {
 		expect(factoryCalls).to.equal(2);
 		expect(first.closeCalls).to.equal(1);
 		expect(com.isOpen()).to.equal(true);
-		expect(reported).to.deep.equal([]);
+		expect(reported).to.have.length(1);
 		await com.close();
 	});
 
