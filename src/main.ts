@@ -99,6 +99,7 @@ export class VictronBmv extends utils.Adapter {
 				name: field.label,
 				type: field.type,
 				role: field.role,
+				desc: field.descr,
 				read: true,
 				write: false,
 				unit: field.unit,

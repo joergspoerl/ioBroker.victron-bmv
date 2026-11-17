@@ -1,5 +1,5 @@
 import { expect } from "chai";
-import { decodeVeDirectField } from "./fields";
+import { decodeVeDirectField, VE_DIRECT_FIELDS } from "./fields";
 
 describe("VE.Direct field conversion", () => {
 	it("uses the documented voltage, current, SOC and charge scales", () => {
@@ -40,6 +40,18 @@ describe("VE.Direct field conversion", () => {
 		expect(() => decodeVeDirectField("Alarm", "yes")).to.throw();
 		expect(() => decodeVeDirectField("H4", "1.5")).to.throw();
 		expect(() => decodeVeDirectField("V", "")).to.throw();
+	});
+
+	it("rejects non-decimal numeric tokens for every numeric field", () => {
+		const numericLabels = Object.values(VE_DIRECT_FIELDS).filter(field => field.type === "number").map(field => field.id);
+		expect(numericLabels).to.include.members(["V", "I", "SOC", "TTG", "H9", "H17"]);
+
+		for (const label of numericLabels) {
+			for (const value of ["0x3336", "0b101", "1e2", "1.0", " 1", "1 ", "+", "-", ""]) {
+				expect(() => decodeVeDirectField(label, value), `${label}=${JSON.stringify(value)}`).to.throw();
+			}
+			expect(Object.values(decodeVeDirectField(label, "---")!)[0], label).to.equal(null);
+		}
 	});
 
 	it("covers additional BMV fields without changing their identifiers", () => {

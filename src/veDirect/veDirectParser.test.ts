@@ -199,6 +199,22 @@ describe("VE.Direct byte parser", () => {
 		expect(parser.unknownFields).to.equal(1);
 	});
 
+	it("rejects a checksum-valid frame whose scaled values are not decimal integers", () => {
+		const parser = new VeDirectParser();
+		const frames = collect(parser);
+		let validFrames = 0;
+		parser.onValidFrame = () => validFrames++;
+
+		parser.receive(makeFrame([["V", "0x3336"], ["I", "1e2"]]));
+		expect(frames).to.have.length(0);
+		expect(validFrames).to.equal(0);
+		expect(parser.invalidValues).to.equal(2);
+		expect(parser.invalidFrames).to.equal(1);
+
+		parser.receive(makeFrame([["V", "13118"]]));
+		expect(frames).to.deep.equal([{ V: 13.118 }]);
+	});
+
 	it("keeps checksum 0x3A plus following :A bytes identical at every chunk boundary", () => {
 		const frame = makeFrameWithChecksum(0x3a);
 		const next = makeFrame([["I", "1000"]]);

@@ -164,6 +164,22 @@ describe("VE.Direct ready and object lifecycle", () => {
 		})).to.equal(true);
 	});
 
+	it("publishes the protocol field description with every field object", async () => {
+		const adapter = harness();
+		adapter.setObjectNotExistsAsync = sinon.stub().resolves();
+		adapter.extendObjectAsync = sinon.stub().resolves();
+		await adapter.initObjects();
+
+		const fieldCalls = adapter.extendObjectAsync.getCalls().filter((call: any) => call.args[0] !== "info.connection");
+		expect(fieldCalls.length).to.be.greaterThan(0);
+		for (const call of fieldCalls) {
+			expect(call.args[1].common.desc, call.args[0]).to.be.a("string");
+			expect(call.args[1].common.desc, call.args[0]).not.to.equal("");
+		}
+		expect(fieldCalls.find((call: any) => call.args[0] === "V").args[1].common.desc).to.contain("mV");
+		expect(fieldCalls.find((call: any) => call.args[0] === "H9").args[1].common.desc).to.contain("Seconds");
+	});
+
 	it("stops object initialization after unload and waits for the pending ready operation", async () => {
 		const adapter = harness();
 		let release!: () => void;

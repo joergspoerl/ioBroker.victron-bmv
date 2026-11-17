@@ -396,5 +396,3 @@ export class VictronBmvCom {
 		}
 	}
 }
-
-export type Bmv_data = VeDirectFrame;
