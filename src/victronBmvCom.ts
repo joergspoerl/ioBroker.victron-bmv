@@ -69,7 +69,7 @@ export class VictronBmvCom {
 	private closeRequestId = 0;
 	private openCloseRequestId = 0;
 	private readonly portStates = new WeakMap<SerialPortLike, PortState>();
-	private readonly closeWaiters = new WeakMap<SerialPortLike, () => void>();
+	private readonly closeWaiters = new WeakMap<SerialPortLike, Set<() => void>>();
 	private readonly openTimeoutMs: number;
 	private readonly closeTimeoutMs: number;
 	private readonly lateCloseRetryMs: number;
@@ -264,7 +264,13 @@ export class VictronBmvCom {
 		}
 
 		const closeEvent = deferred<void>();
-		this.closeWaiters.set(port, () => closeEvent.resolve());
+		const waiter = (): void => closeEvent.resolve();
+		let waiters = this.closeWaiters.get(port);
+		if (!waiters) {
+			waiters = new Set();
+			this.closeWaiters.set(port, waiters);
+		}
+		waiters.add(waiter);
 		try {
 			if (state.closePending) {
 				await this.withTimeout(closeEvent.promise, this.closeTimeoutMs, "close");
@@ -291,7 +297,11 @@ export class VictronBmvCom {
 			}
 			throw error;
 		} finally {
-			this.closeWaiters.delete(port);
+			const registered = this.closeWaiters.get(port);
+			registered?.delete(waiter);
+			if (registered?.size === 0) {
+				this.closeWaiters.delete(port);
+			}
 		}
 	}
 
@@ -344,7 +354,10 @@ export class VictronBmvCom {
 		state.closePending = false;
 		state.rejectPending?.(new Error("Serial port closed while opening"));
 		state.rejectPending = undefined;
-		this.closeWaiters.get(port)?.();
+		const waiters = this.closeWaiters.get(port);
+		if (waiters) {
+			for (const waiter of [...waiters]) waiter();
+		}
 		if (this.port === port) {
 			this.port = undefined;
 			this.parser.reset();

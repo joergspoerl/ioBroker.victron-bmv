@@ -219,7 +219,13 @@ class VictronBmvCom {
             this.parser.reset();
         }
         const closeEvent = deferred();
-        this.closeWaiters.set(port, () => closeEvent.resolve());
+        const waiter = () => closeEvent.resolve();
+        let waiters = this.closeWaiters.get(port);
+        if (!waiters) {
+            waiters = new Set();
+            this.closeWaiters.set(port, waiters);
+        }
+        waiters.add(waiter);
         try {
             if (state.closePending) {
                 await this.withTimeout(closeEvent.promise, this.closeTimeoutMs, "close");
@@ -249,7 +255,11 @@ class VictronBmvCom {
             throw error;
         }
         finally {
-            this.closeWaiters.delete(port);
+            const registered = this.closeWaiters.get(port);
+            registered === null || registered === void 0 ? void 0 : registered.delete(waiter);
+            if ((registered === null || registered === void 0 ? void 0 : registered.size) === 0) {
+                this.closeWaiters.delete(port);
+            }
         }
     }
     async handleOpenFailure(port, error) {
@@ -293,7 +303,7 @@ class VictronBmvCom {
         });
     }
     handlePortClosed(port) {
-        var _a, _b;
+        var _a;
         const state = this.portStates.get(port);
         if (!state || state.closed) {
             return;
@@ -303,7 +313,11 @@ class VictronBmvCom {
         state.closePending = false;
         (_a = state.rejectPending) === null || _a === void 0 ? void 0 : _a.call(state, new Error("Serial port closed while opening"));
         state.rejectPending = undefined;
-        (_b = this.closeWaiters.get(port)) === null || _b === void 0 ? void 0 : _b();
+        const waiters = this.closeWaiters.get(port);
+        if (waiters) {
+            for (const waiter of [...waiters])
+                waiter();
+        }
         if (this.port === port) {
             this.port = undefined;
             this.parser.reset();

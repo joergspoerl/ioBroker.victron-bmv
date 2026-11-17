@@ -570,6 +570,51 @@ describe("VictronBmvCom serial lifecycle", () => {
 		expect(first.listenerCount("close")).to.equal(0);
 	});
 
+	it("notifies every concurrent waiter when one native close completes", async () => {
+		const first = new FakeSerialPort();
+		const second = new FakeSerialPort();
+		let firstOpenCallback!: (error?: Error | null) => void;
+		let releaseClose!: () => void;
+		first.closeGate = new Promise<void>(resolve => releaseClose = resolve);
+		let factoryCalls = 0;
+		const reported: Error[] = [];
+		const com = new VictronBmvCom((_path, _options, callback) => {
+			const index = factoryCalls++;
+			const port = index === 0 ? first : second;
+			if (index === 0) {
+				firstOpenCallback = callback;
+			} else {
+				process.nextTick(() => {
+					port.isOpen = true;
+					callback();
+				});
+			}
+			return port;
+		}, { openTimeoutMs: 20, closeTimeoutMs: 30, lateCloseRetryMs: 1 });
+		com.onError = error => reported.push(error);
+		try {
+			await com.open("first");
+			expect.fail("first open should time out");
+		} catch {}
+		reported.length = 0;
+
+		first.isOpen = true;
+		firstOpenCallback();
+		await new Promise(resolve => setImmediate(resolve));
+		expect(first.isOpen).to.equal(false); // SerialPort 12: closing implies isOpen=false.
+		const reopening = com.open("second");
+		await new Promise(resolve => setImmediate(resolve));
+		releaseClose();
+		await reopening;
+		await new Promise(resolve => setImmediate(resolve));
+
+		expect(factoryCalls).to.equal(2);
+		expect(first.closeCalls).to.equal(1);
+		expect(com.isOpen()).to.equal(true);
+		expect(reported).to.deep.equal([]);
+		await com.close();
+	});
+
 	it("resets a partial frame before a later reconnect", async () => {
 		const port = new FakeSerialPort();
 		const frames: VeDirectFrame[] = [];

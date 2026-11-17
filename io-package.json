@@ -40,7 +40,7 @@
         "platform": "Javascript/Node.js",
         "main": "build/main.js",
         "icon": "victron-bmv.png",
-        "enabled": false,
+        "enabled": true,
         "extIcon": "https://raw.githubusercontent.com/joergoss/ioBroker.victron-bmv/master/admin/victron-bmv.png",
         "readme": "https://github.com/joergoss/ioBroker.victron-bmv/blob/master/README.md",
         "loglevel": "info",
